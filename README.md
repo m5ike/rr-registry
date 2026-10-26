@@ -1,7 +1,7 @@
 # RR Registry
 
-Jednoduchý, samostatný **registr balíčků pro npm** a kompatibilní nástroje (yarn, pnpm, bun, deno `npm:`)
-plus **obecné repozitáře souborů**, s **routovacím pluginem** (proxy na další registry s cache),
+Jednoduchý, samostatný **registr balíčků pro npm** a kompatibilní nástroje (yarn, pnpm, bun, deno `npm:`),
+**registr Docker / OCI image** (Docker Registry HTTP API v2) plus **obecné repozitáře souborů**, s **routovacím pluginem** (proxy na další registry s cache),
 **správcovským REST API** a čtyřmi klienty: **Web GUI**, **CLI**, **bash CLI** a **bash GUI**.
 Maintainer: **m5ike**. Bez externích závislostí – jen Node.js ≥ 18 (server) a bash + curl (klienti).
 
@@ -12,6 +12,7 @@ Maintainer: **m5ike**. Bez externích závislostí – jen Node.js ≥ 18 (serve
 │   ├─ /admin/         Web GUI (konfigurace a správa)  ── používá rr-client.js │
 │   ├─ /api/v1/*       správcovské API (49 operací, api/spec.json)             │
 │   ├─ /, /r/<repo>/   npm registry protokol (publish, install, search, tagy…) │
+│   ├─ /v2/            Docker Registry API v2 (push, pull, tagy, katalog)     │
 │   ├─ /~<klíč>/       směrování dle klíče                                     │
 │   ├─ plugin router   pravidla → vzdálené registry  ─┐                        │
 │   └─ cache           data/cache (TTL, stale-if-error)◄┘                      │
@@ -56,7 +57,10 @@ rr-web serve --open                                       # Web GUI lokálně
 
 * **npm registry** – publish/unpublish, deprecate, dist-tagy, vyhledávání (`/-/v1/search`), `npm login` (legacy),
   `whoami`, scoped balíčky, `npm audit` (přeposlání na upstream), integrity sha512/sha1.
-* **Více repozitářů** – typ `npm` nebo `generic` (libovolné soubory: PUT/GET/DELETE), výchozí repozitář na `/`,
+* **Docker / OCI image** – repozitář typu `docker` na `/v2/`: `docker login/push/pull` (heslo nebo token), chunked i monolitické
+  uploady, kontrola digestů, image indexy (multi-platform), cross-repo mount, katalog a tagy se stránkováním, správa image
+  v API a Web GUI (🐳 Docker image) a garbage collection nepoužívaných dat.
+* **Více repozitářů** – typ `npm`, `docker` nebo `generic` (libovolné soubory: PUT/GET/DELETE), výchozí repozitář na `/`,
   ostatní na `/r/<repo>/`, veřejné/soukromé, zákaz publikace.
 * **Přímý přístup k úložišti** – strom adresářů, informace, obsah souborů, upload, mazání (API i GUI).
 * **Routing plugin** – směrování dle masky URL (prefix/glob/regex/contains/exact), části URL (balíček / cesta / celá URL),

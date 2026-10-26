@@ -117,6 +117,12 @@ ${esc(st.registry.replace(/^https?:/, ''))}:_authToken=&lt;token&gt;
 yarn config set npmRegistryServer ${esc(st.registry)}     # yarn berry
 pnpm config set registry ${esc(st.registry)}
 bun install --registry ${esc(st.registry)}</pre></div>
+      <div class="card"><h2>Docker image</h2>
+        <pre>docker login ${esc(st.registry.replace(/^https?:\/\//, '').replace(/\/$/, ''))} -u &lt;uživatel&gt;      # heslo nebo token
+docker tag moje-image ${esc(st.registry.replace(/^https?:\/\//, '').replace(/\/$/, ''))}/tym/moje-image:1.0
+docker push ${esc(st.registry.replace(/^https?:\/\//, '').replace(/\/$/, ''))}/tym/moje-image:1.0
+docker pull ${esc(st.registry.replace(/^https?:\/\//, '').replace(/\/$/, ''))}/tym/moje-image:1.0</pre>
+        <p class="muted small">Jiný host než localhost vyžaduje HTTPS (reverse proxy) nebo položku "insecure-registries" v nastavení Docker démona.</p></div>
       <div class="card"><h2>Poslední změny</h2>
         <div class="table-wrap"><table><tr><th>Čas</th><th>Uživatel</th><th>Akce</th><th>Cíl</th></tr>
         ${logs.audit.map((a) => `<tr><td>${fmtDate(a.time)}</td><td>${esc(a.user)}</td><td>${esc(a.action)}</td><td>${esc(a.target)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">zatím nic</td></tr>'}
@@ -145,7 +151,7 @@ bun install --registry ${esc(st.registry)}</pre></div>
     modal(`<h2>${r ? `Upravit repozitář ${esc(r.name)}` : 'Nový repozitář'}</h2>
       <form class="form" id="f">
         <label>Název <input name="name" value="${esc(r ? r.name : '')}" ${r ? 'disabled' : 'required pattern="[a-z0-9][a-z0-9._-]*"'}></label>
-        <label>Typ <select name="type" ${r ? 'disabled' : ''}><option value="npm">npm (npm, yarn, pnpm, bun, deno)</option><option value="generic"${r && r.type === 'generic' ? ' selected' : ''}>generic (soubory)</option></select></label>
+        <label>Typ <select name="type" ${r ? 'disabled' : ''}><option value="npm">npm (npm, yarn, pnpm, bun, deno)</option><option value="generic"${r && r.type === 'generic' ? ' selected' : ''}>generic (soubory)</option><option value="docker"${r && r.type === 'docker' ? ' selected' : ''}>docker (Docker / OCI image, API /v2/)</option></select></label>
         <label style="grid-column:1/-1">Popis <input name="description" value="${esc(r ? r.description : '')}"></label>
         <label class="check"><input type="checkbox" name="public" ${!r || r.public ? 'checked' : ''}> veřejné čtení (anonymně)</label>
         <label class="check"><input type="checkbox" name="allowPublish" ${!r || r.allowPublish ? 'checked' : ''}> povolit publikaci</label>
@@ -317,6 +323,50 @@ bun install --registry ${esc(st.registry)}</pre></div>
       $('#dl', el).onclick = async () => download(await run(() => rr.readFile(repo, { path })), path.split('/').pop());
     });
   }
+
+  views.images = async (repoName, ...rest) => {
+    const repos = (await rr.listRepos()).filter((r) => r.type === 'docker');
+    if (!repos.length) return setView('Docker image', '<div class="card"><p class="muted">Žádný docker repozitář — vytvořte ho v sekci Repozitáře (typ docker).</p></div>');
+    const repo = repos.find((r) => r.name === repoName) || repos.find((r) => r.dockerDefault) || repos[0];
+    const image = rest.length ? rest.join('/') : '';
+    const host = location.host;
+    if (image) {
+      const tags = await rr.listImageTags(repo.name, image);
+      const v = setView(`🐳 ${image}`, `
+        <div class="row"><a class="btn" href="#/images/${enc(repo.name)}">← Image</a><span class="spacer"></span></div>
+        <div class="card"><pre>docker pull ${esc(host)}/${esc(image)}:${esc(tags[0] ? tags[0].tag : 'latest')}</pre></div>
+        <div class="card table-wrap"><table><tr><th>Tag</th><th>Digest</th><th>Typ</th><th>Velikost</th><th>Vytvořen</th><th></th></tr>
+        ${tags.map((t) => `<tr><td><b>${esc(t.tag)}</b></td><td><code title="${esc(t.digest)}">${esc((t.digest || '').slice(0, 19))}…</code></td><td class="small muted">${esc((t.mediaType || '').replace('application/vnd.', ''))}</td><td>${fmtBytes(t.size)}</td><td>${fmtDate(t.created)}</td>
+          <td class="actions"><button class="btn small danger" data-del="${esc(t.tag)}">Smazat</button></td></tr>`).join('') || '<tr><td colspan="6" class="muted">žádné tagy</td></tr>'}
+        </table></div>`);
+      $$('[data-del]', v).forEach((b) => {
+        b.onclick = async () => {
+          if (!(await confirmBox(`Smazat tag ${image}:${b.dataset.del}? Data uvolní garbage collection.`))) return;
+          await run(() => rr.deleteImageTag(repo.name, image, b.dataset.del), 'Tag smazán');
+          route();
+        };
+      });
+      return v;
+    }
+    const images = await rr.listImages(repo.name);
+    const v = setView('🐳 Docker image', `
+      <div class="row">${repos.length > 1 ? `<select id="dockerRepo">${repos.map((r) => `<option value="${esc(r.name)}"${r.name === repo.name ? ' selected' : ''}>${esc(r.name)}</option>`).join('')}</select>` : `<span class="muted">repozitář <b>${esc(repo.name)}</b> · API <code>${esc(host)}/v2/</code></span>`}
+        <span class="spacer"></span>${me.role === 'admin' ? '<button class="btn" id="gc">🧹 Garbage collection</button>' : ''}</div>
+      <div class="card table-wrap"><table><tr><th>Image</th><th>Tagy</th><th>Velikost (latest)</th><th>Aktualizace</th></tr>
+      ${images.map((i) => `<tr class="click" data-img="${esc(i.name)}"><td><b>${esc(i.name)}</b></td><td>${i.tags}</td><td>${fmtBytes(i.size)}</td><td>${fmtDate(i.updated)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">zatím žádné image — viz Přehled → Docker image</td></tr>'}
+      </table></div>`);
+    const sel = $('#dockerRepo', v);
+    if (sel) sel.onchange = () => { location.hash = `#/images/${enc(sel.value)}`; };
+    $$('tr[data-img]', v).forEach((tr) => { tr.onclick = () => { location.hash = `#/images/${enc(repo.name)}/${tr.dataset.img.split('/').map(enc).join('/')}`; }; });
+    const gc = $('#gc', v);
+    if (gc) gc.onclick = async () => {
+      const untagged = await confirmBox('Smazat i manifesty bez tagu? (Ne = jen nepoužívaná data)');
+      const r = await run(() => rr.dockerGc(repo.name, { untagged }));
+      if (r) toast(`Uvolněno ${fmtBytes(r.bytes)} — ${r.blobs} blobů, ${r.manifests} manifestů, ${r.uploads} nedokončených uploadů`);
+      route();
+    };
+    return v;
+  };
 
   views.search = async () => {
     const q = new URLSearchParams(location.hash.split('?')[1] || '').get('q') || '';

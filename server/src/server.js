@@ -7,6 +7,7 @@
 //   /install.sh               client installer           /static/     assets + rr-client.js
 //   /<npm path>               default repository (npm protocol), e.g. /lodash, /-/v1/search
 //   /r/<repo>/<path>          a specific repository
+//   /v2/...                   Docker Registry HTTP API v2 (the docker repository from settings.dockerRepo)
 //   /~<key>/...               routing key prefix (combinable with /r/<repo>/)
 const fs = require('fs');
 const path = require('path');
@@ -20,11 +21,12 @@ const { Cache } = require('./cache');
 const { PluginManager } = require('./plugins');
 const { NpmRepo } = require('./repos/npm');
 const { GenericRepo } = require('./repos/generic');
+const { DockerRepo, sendRegistryError } = require('./repos/docker');
 const { createAdminApi } = require('./api/admin');
 const { createWeb } = require('./web');
 
-const REPO_TYPES = { npm: NpmRepo, generic: GenericRepo };
-const SETTINGS_KEYS = ['title', 'defaultRepo', 'anonymousRead', 'allowRegistration', 'cacheTtl', 'tarballTtl', 'plugins', 'clientsRepo', 'cors', 'motd'];
+const REPO_TYPES = { npm: NpmRepo, generic: GenericRepo, docker: DockerRepo };
+const SETTINGS_KEYS = ['title', 'defaultRepo', 'dockerRepo', 'anonymousRead', 'allowRegistration', 'cacheTtl', 'tarballTtl', 'plugins', 'clientsRepo', 'cors', 'motd'];
 
 function makeLogger(quiet) {
   const ts = () => new Date().toISOString();
@@ -55,12 +57,14 @@ class App {
         tarballTtl: 30 * 24 * 3600,
         plugins: ['router'],
         clientsRepo: c.defaultRepo,
+        dockerRepo: 'docker',
         cors: '*',
         motd: '',
       })),
       repos: new JsonStore(cfg('repos.json'), () => [
         { name: c.defaultRepo, type: 'npm', description: 'Výchozí npm repozitář', public: true, allowPublish: true, created: new Date().toISOString() },
         { name: 'files', type: 'generic', description: 'Obecné soubory / artefakty', public: true, allowPublish: true, created: new Date().toISOString() },
+        { name: 'docker', type: 'docker', description: 'Docker / OCI image (Docker Registry API v2 na /v2/)', public: true, allowPublish: true, created: new Date().toISOString() },
       ]),
       routes: new JsonStore(cfg('routes.json'), () => (c.upstream ? [{
         id: 'npmjs', name: 'npmjs-fallback', enabled: true, priority: 1000, when: 'notfound', matchOn: 'package', matchType: 'prefix', pattern: '',
@@ -70,6 +74,7 @@ class App {
       users: new JsonStore(cfg('users.json'), {}),
       tokens: new JsonStore(cfg('tokens.json'), []),
     };
+    this.ensureDockerRepo();
     const secretFile = cfg('secret');
     if (!fs.existsSync(secretFile)) fs.writeFileSync(secretFile, crypto.randomBytes(32).toString('hex'), { mode: 0o600 });
     this.secret = fs.readFileSync(secretFile, 'utf8').trim();
@@ -84,6 +89,22 @@ class App {
   }
 
   // ---------- repositories ----------
+  /** Installations from before 1.1 get the docker repository on first start. */
+  ensureDockerRepo() {
+    const s = this.stores.settings.get();
+    const repos = this.stores.repos.get();
+    if (!s.dockerRepo && !repos.some((r) => r.type === 'docker')) {
+      if (!repos.some((r) => r.name === 'docker'))
+        this.stores.repos.update((l) => { l.push({ name: 'docker', type: 'docker', description: 'Docker / OCI image (Docker Registry API v2 na /v2/)', public: true, allowPublish: true, created: new Date().toISOString() }); });
+      this.stores.settings.set({ ...s, dockerRepo: 'docker' });
+    } else if (!s.dockerRepo) this.stores.settings.set({ ...s, dockerRepo: repos.find((r) => r.type === 'docker').name });
+  }
+  dockerRepo() {
+    const name = this.stores.settings.get().dockerRepo;
+    const conf = name && this.repoConfig(name);
+    if (!conf || conf.type !== 'docker') throw new HttpError(404, 'no docker repository configured (settings.dockerRepo)');
+    return this.repoHandler(name);
+  }
   listRepos() {
     return this.stores.repos.get();
   }
@@ -110,14 +131,22 @@ class App {
     const conf = this.repoConfig(name);
     if (!conf) throw new HttpError(404, `repository ${name} not found`);
     const h = this.repoHandler(name);
-    const info = { ...conf, default: name === this.defaultRepoName(), path: `/r/${name}/`, packages: conf.type === 'npm' ? h.names().length : undefined };
+    const docker = conf.type === 'docker';
+    const info = {
+      ...conf,
+      default: name === this.defaultRepoName(),
+      path: docker ? '/v2/' : `/r/${name}/`,
+      packages: conf.type === 'npm' ? h.names().length : undefined,
+      images: docker ? h.names().length : undefined,
+      dockerDefault: docker ? name === this.stores.settings.get().dockerRepo : undefined,
+    };
     if (detailed) info.storage = { dir: h.dir, ...dirSize(h.dir) };
     return info;
   }
   createRepo(body) {
     const name = String(body.name || '');
     if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(name)) throw new HttpError(400, 'invalid repository name (a-z, 0-9, ._-)');
-    if (['r', 'api', 'admin', 'static', 'downloads'].includes(name)) throw new HttpError(400, 'reserved repository name');
+    if (['r', 'api', 'admin', 'static', 'downloads', 'v2'].includes(name)) throw new HttpError(400, 'reserved repository name');
     const type = body.type || 'npm';
     if (!REPO_TYPES[type]) throw new HttpError(400, `type must be one of ${Object.keys(REPO_TYPES).join(', ')}`);
     if (this.repoConfig(name)) throw new HttpError(409, `repository ${name} already exists`);
@@ -149,6 +178,8 @@ class App {
       s[k] = body[k];
     }
     if (!this.repoConfig(s.defaultRepo)) throw new HttpError(400, `repository ${s.defaultRepo} does not exist`);
+    if (s.defaultRepo && this.repoConfig(s.defaultRepo).type === 'docker') throw new HttpError(400, 'the default repository cannot be a docker repository');
+    if (s.dockerRepo && (!this.repoConfig(s.dockerRepo) || this.repoConfig(s.dockerRepo).type !== 'docker')) throw new HttpError(400, `${s.dockerRepo} is not a docker repository`);
     for (const k of ['anonymousRead', 'allowRegistration']) s[k] = s[k] === true || s[k] === 'true';
     for (const k of ['cacheTtl', 'tarballTtl']) s[k] = Number(s[k]) || 0;
     if (typeof s.plugins === 'string') s.plugins = s.plugins.split(',').map((x) => x.trim()).filter(Boolean);
@@ -260,6 +291,14 @@ class App {
     try {
       let p = url.pathname;
       if (p === '/api/v1' || p.startsWith('/api/v1/')) return await this.api(req, res, url);
+      if (p === '/v2' || p.startsWith('/v2/')) {
+        try {
+          return await this.dockerRepo().handleV2(req, res, p.slice(3) || '/', url.searchParams);
+        } catch (e) {
+          if (!e.status || e.status >= 500) this.log.error(req.method, req.url, e.stack || e.message);
+          return sendRegistryError(res, e);
+        }
+      }
       if (await this.web.serve(req, res, url)) return;
 
       const signed = /\/-\/rr\/t\/([^/]+)\/([^/]+)\/([^/]+)$/.exec(p);
@@ -321,6 +360,8 @@ class App {
     this.seedClients();
     this.server = http.createServer((req, res) => this.handle(req, res));
     this.server.keepAliveTimeout = 65000;
+    // image layers can be large - no overall request deadline (headers still time out)
+    this.server.requestTimeout = 0;
     return new Promise((resolve) => {
       this.server.listen(port, host, () => {
         this.port = this.server.address().port;

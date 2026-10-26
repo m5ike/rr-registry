@@ -1,4 +1,4 @@
-# RR Registry – Management API (v1.0.0)
+# RR Registry – Management API (v1.1.0)
 
 > Vygenerováno z `api/spec.json` nástrojem `tools/gen-clients.js` – needitovat ručně.
 
@@ -38,7 +38,7 @@ Každá operace je dostupná ve všech klientech:
 | Operace | Metoda a cesta | Auth | Popis | Bash |
 |---|---|---|---|---|
 | `listRepos` | `GET /api/v1/repos` | read | Seznam repozitářů | `rr_api_list_repos` |
-| `createRepo` | `POST /api/v1/repos` | admin | Vytvořit repozitář {name, type: npm|generic, description, public, allowPublish}<br>body: json | `rr_api_create_repo` |
+| `createRepo` | `POST /api/v1/repos` | admin | Vytvořit repozitář {name, type: npm|generic|docker, description, public, allowPublish}<br>body: json | `rr_api_create_repo` |
 | `getRepo` | `GET /api/v1/repos/:repo` | read | Detail repozitáře | `rr_api_get_repo` |
 | `updateRepo` | `PUT /api/v1/repos/:repo` | admin | Upravit repozitář {description, public, allowPublish}<br>body: json | `rr_api_update_repo` |
 | `deleteRepo` | `DELETE /api/v1/repos/:repo` | admin | Smazat repozitář (purge=1 smaže i soubory)<br>query: `purge` | `rr_api_delete_repo` |
@@ -68,6 +68,15 @@ Každá operace je dostupná ve všech klientech:
 | `writeFile` | `PUT /api/v1/repos/:repo/files` | admin | Nahrát / přepsat soubor<br>query: `path`<br>body: binary | `rr_api_write_file` |
 | `deleteFile` | `DELETE /api/v1/repos/:repo/files` | admin | Smazat soubor nebo adresář<br>query: `path` | `rr_api_delete_file` |
 | `mkdir` | `POST /api/v1/repos/:repo/dirs` | admin | Vytvořit adresář<br>query: `path` | `rr_api_mkdir` |
+
+## docker
+
+| Operace | Metoda a cesta | Auth | Popis | Bash |
+|---|---|---|---|---|
+| `listImages` | `GET /api/v1/repos/:repo/images` | read | Docker image v repozitáři {name, tags, size, updated} | `rr_api_list_images` |
+| `listImageTags` | `GET /api/v1/repos/:repo/images/:image/tags` | read | Tagy image {tag, digest, mediaType, size, created} (název image URL-enkódovaný, např. agentconf%2Fnode) | `rr_api_list_image_tags` |
+| `deleteImageTag` | `DELETE /api/v1/repos/:repo/images/:image/tags/:tag` | publish | Smazat tag image (data uvolní garbage collection) | `rr_api_delete_image_tag` |
+| `dockerGc` | `POST /api/v1/repos/:repo/gc` | admin | Garbage collection docker repozitáře {untagged: smazat i neotagované manifesty}<br>body: json | `rr_api_docker_gc` |
 
 ## routes
 

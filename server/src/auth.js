@@ -132,6 +132,18 @@ class Auth {
     return before !== this.tokens.get().length;
   }
 
+  /** Identity of an access token (or the api_token); null when unknown / expired. */
+  tokenIdentity(tok) {
+    const c = this.app.config;
+    if (!tok) return null;
+    if (c.apiToken && safeEqual(tok, c.apiToken)) return { name: 'api-token', role: 'admin', via: 'api_token' };
+    const rec = this.tokens.get().find((t) => t.hash === sha256(tok));
+    if (!rec || (rec.expires && Date.parse(rec.expires) <= Date.now())) return null;
+    const u = this.users.get()[rec.user];
+    const role = rec.user === c.adminUser ? 'admin' : u ? u.role : rec.role;
+    return role ? { name: rec.user, role, readonly: rec.readonly, tokenId: rec.id, via: 'token' } : null;
+  }
+
   /** Identify the caller of a request (Bearer token, Basic auth) - null when anonymous. */
   authenticate(req) {
     if (req._identity !== undefined) return req._identity;
@@ -164,9 +176,13 @@ class Auth {
     } else if (basic) {
       const raw = Buffer.from(basic[1], 'base64').toString('utf8');
       const i = raw.indexOf(':');
-      id = this.checkCredentials(raw.slice(0, i), raw.slice(i + 1));
+      const user = raw.slice(0, i);
+      const pass = raw.slice(i + 1);
+      id = this.checkCredentials(user, pass);
+      if (id) id.via = 'basic';
+      // `docker login -u <user> -p <token>`: a token (or the api_token) as the password
+      else id = this.tokenIdentity(pass);
       if (!id) throw new HttpError(401, 'invalid credentials');
-      id.via = 'basic';
     }
     req._identity = id;
     return id;

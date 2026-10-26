@@ -33,6 +33,27 @@ curl http://HOST:4873/r/files/app/            # výpis adresáře (JSON, v prohl
 curl -X DELETE -H "Authorization: Bearer $TOKEN" http://HOST:4873/r/files/app/app-1.0.zip
 ```
 
+## Docker image
+
+Docker repozitář (výchozí `docker`, viz nastavení `dockerRepo`) obsluhuje Docker Registry HTTP API v2 na `/v2/`:
+
+```bash
+docker login localhost:4873 -u admin            # heslo uživatele, nebo jako heslo access token (rr_…) / api_token
+docker tag moje-image localhost:4873/tym/moje-image:1.0
+docker push localhost:4873/tym/moje-image:1.0
+docker pull localhost:4873/tym/moje-image:1.0
+curl http://localhost:4873/v2/_catalog          # seznam image
+curl http://localhost:4873/v2/tym/moje-image/tags/list
+```
+
+* Čtení je anonymní, pokud je repozitář veřejný a `anonymousRead` zapnuté; push vyžaduje roli publisher nebo admin.
+* Docker bez TLS povolí jen `localhost` – pro jiné hosty použijte HTTPS reverse proxy nebo `insecure-registries`
+  v konfiguraci Docker démona.
+* Bloby (vrstvy) se ukládají jednou a sdílí mezi image. Smazání tagu data neuvolní – spusťte garbage collection
+  (Web GUI → 🐳 Docker image → Garbage collection, nebo `POST /api/v1/repos/docker/gc` s `{"untagged": true}`).
+* Správa: `GET /api/v1/repos/:repo/images`, `GET …/images/:image/tags` (název URL-enkódovaný, `tym%2Fmoje-image`),
+  `DELETE …/images/:image/tags/:tag`.
+
 ## Klienti
 
 Všichni klienti volají správcovské API výhradně přes knihovny generované z `api/spec.json`

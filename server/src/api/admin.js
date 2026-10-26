@@ -22,6 +22,11 @@ function bool(v) {
 }
 
 function createHandlers(app) {
+  const dockerRepo = (name) => {
+    const h = app.repoHandler(name);
+    if (h.conf.type !== 'docker') throw new HttpError(400, `repository ${name} is not a docker repository`);
+    return h;
+  };
   const npmRepo = (name) => {
     const h = app.repoHandler(name);
     if (h.conf.type !== 'npm') throw new HttpError(400, `repository ${name} is not an npm repository`);
@@ -83,6 +88,18 @@ function createHandlers(app) {
 
     // ---- packages ----
     listPackages: ({ params, query }) => app.repoHandler(params.repo).listPackages(query.q || ''),
+    // ---- docker ----
+    listImages: ({ params }) => dockerRepo(params.repo).images(),
+    listImageTags: ({ params }) => dockerRepo(params.repo).tagDetails(params.image),
+    deleteImageTag: ({ params, identity }) => {
+      dockerRepo(params.repo).deleteTag(params.image, params.tag);
+      app.audit(identity, 'docker-delete', `${params.repo}/${params.image}:${params.tag}`);
+    },
+    dockerGc: ({ params, body, identity }) => {
+      const r = dockerRepo(params.repo).gc({ untagged: bool(body && body.untagged) });
+      app.audit(identity, 'docker-gc', `${params.repo}: ${r.blobs} blobs, ${r.manifests} manifests`);
+      return r;
+    },
     uploadPackage: async ({ req, params, query, identity }) => {
       const repo = npmRepo(params.repo);
       const tgz = await readBody(req, app.config.maxBody);
