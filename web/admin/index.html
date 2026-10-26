@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RR Registry – administrace</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232563eb'/%3E%3Ctext x='32' y='42' font-family='Arial' font-weight='700' font-size='28' text-anchor='middle' fill='white'%3ERR%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+  <div id="login" class="login hidden">
+    <form id="loginForm" class="card login-card">
+      <div class="brand big"><span class="logo">RR</span> Registry</div>
+      <p class="muted">Přihlášení do administrace</p>
+      <label>Server <input id="lServer" placeholder="(tento server)"></label>
+      <div class="tabs small" id="loginTabs">
+        <button type="button" data-mode="password" class="active">Jméno a heslo</button>
+        <button type="button" data-mode="token">API token</button>
+      </div>
+      <div data-mode="password">
+        <label>Uživatel <input id="lUser" value="admin" autocomplete="username"></label>
+        <label>Heslo <input id="lPass" type="password" autocomplete="current-password"></label>
+      </div>
+      <div data-mode="token" class="hidden">
+        <label>API token <input id="lToken" placeholder="RR_API_TOKEN nebo uživatelský token"></label>
+      </div>
+      <button class="btn primary" type="submit">Přihlásit</button>
+      <p id="loginErr" class="error"></p>
+      <p class="muted small"><a href="/">← úvodní stránka</a></p>
+    </form>
+  </div>
+
+  <div id="app" class="hidden">
+    <aside class="sidebar">
+      <div class="brand"><span class="logo">RR</span> Registry</div>
+      <nav id="nav">
+        <a href="#/dashboard" data-view="dashboard">📊 Přehled</a>
+        <a href="#/repos" data-view="repos">🗄️ Repozitáře</a>
+        <a href="#/packages" data-view="packages">📦 Balíčky</a>
+        <a href="#/files" data-view="files">📁 Soubory</a>
+        <a href="#/search" data-view="search">🔍 Hledání</a>
+        <a href="#/routes" data-view="routes">🔀 Směrování</a>
+        <a href="#/cache" data-view="cache">💾 Cache</a>
+        <a href="#/users" data-view="users">👤 Uživatelé</a>
+        <a href="#/tokens" data-view="tokens">🔑 Tokeny</a>
+        <a href="#/settings" data-view="settings">⚙️ Nastavení</a>
+        <a href="#/logs" data-view="logs">📜 Logy</a>
+        <a href="#/clients" data-view="clients">⬇️ Klienti</a>
+      </nav>
+      <div class="sidebar-foot">
+        <div id="who" class="muted small"></div>
+        <button id="logout" class="btn small">Odhlásit</button>
+      </div>
+    </aside>
+    <main>
+      <header class="topbar">
+        <button id="menuToggle" class="btn small only-mobile">☰</button>
+        <h1 id="title">Přehled</h1>
+        <span id="serverInfo" class="muted small"></span>
+      </header>
+      <section id="view"></section>
+    </main>
+  </div>
+
+  <div id="modal" class="modal hidden"><div class="modal-box card"><div id="modalBody"></div></div></div>
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="config.js"></script>
+  <script src="rr-client.js"></script>
+  <script src="admin.js"></script>
+</body>
+</html>

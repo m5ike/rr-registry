@@ -1,0 +1,471 @@
+#!/usr/bin/env bash
+# rr-gui - RR Registry administration GUI for the terminal (whiptail/dialog). Maintainer: m5ike.
+# All operations go through the generated API library lib/rr-api.sh.
+
+_rr_self="${BASH_SOURCE[0]}"
+while [ -L "$_rr_self" ]; do
+  _rr_dir="$(cd -P "$(dirname "$_rr_self")" && pwd)"
+  _rr_self="$(readlink "$_rr_self")"
+  [[ "$_rr_self" != /* ]] && _rr_self="$_rr_dir/$_rr_self"
+done
+RR_HOME="$(cd -P "$(dirname "$_rr_self")/.." && pwd)"
+# shellcheck source=../lib/rr-common.sh
+. "$RR_HOME/lib/rr-common.sh"
+# shellcheck source=../lib/rr-api.sh
+. "$RR_HOME/lib/rr-api.sh"
+rr_config_load
+
+DLG="${RR_DIALOG:-}"
+if [ -z "$DLG" ]; then
+  if command -v whiptail >/dev/null 2>&1; then DLG=whiptail
+  elif command -v dialog >/dev/null 2>&1; then DLG=dialog
+  else rr_die "potřebuji whiptail nebo dialog (apt install whiptail / brew install newt)"; fi
+fi
+rr_have_jq || rr_die "potřebuji jq (apt install jq / brew install jq)"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"; clear' EXIT
+
+H=22; W=90; MH=14
+
+ui() { "$DLG" --title "${UI_TITLE:-RR Registry}" --backtitle "RR Registry GUI $RR_API_VERSION  |  $RR_SERVER  |  m5ike" "$@" 3>&1 1>&2 2>&3; }
+msg() { ui --msgbox "$1" "${2:-12}" "${3:-76}"; }
+input() { ui --inputbox "$1" 10 76 "${2:-}"; }
+secret() { ui --passwordbox "$1" 10 76; }
+yesno() { ui --yesno "$1" 10 76; }
+menu() { local t="$1"; shift; ui --menu "$t" "$H" "$W" "$MH" "$@"; }
+radio() { local t="$1"; shift; ui --radiolist "$t" "$H" "$W" "$MH" "$@"; }
+text() {
+  printf '%s\n' "$1" >"$TMP/text"
+  if [ "$DLG" = whiptail ]; then ui --scrolltext --textbox "$TMP/text" "$H" "$W"; else ui --textbox "$TMP/text" "$H" "$W"; fi
+}
+
+# api <rr_api_fn> args... -> stdout = body; on error show message and return 1
+api() {
+  local out
+  if out=$("$@" 2>"$TMP/err"); then printf '%s' "$out"; return 0; fi
+  msg "Chyba:\n\n$(cat "$TMP/err")"
+  return 1
+}
+
+# menu items from JSON: jsonmenu <json> <jq expression returning [tag, label] pairs flattened>
+jsonmenu() { printf '%s' "$1" | jq -r "$2"; }
+
+# fills global ITEMS (bash 3.2 compatible - no namerefs/mapfile)
+read_items() { ITEMS=(); local line; while IFS= read -r line; do ITEMS+=("$line"); done; }
+
+# ----------------------------------------------------------------- status
+screen_status() {
+  local s
+  s=$(api rr_api_status) || return
+  text "$(printf '%s' "$s" | jq -r '"Server:       \(.title) \(.version)  (maintainer \(.maintainer))
+Registry URL: \(.registry)
+Výchozí repo: \(.defaultRepo)
+Uptime:       \(.uptime) s     Node: \(.node)
+Repozitáře:   \(.repos)     Balíčky: \(.packages)     Pravidla: \(.routes)
+Cache:        \(.cache.entries) položek, \(.cache.bytes) B, hit \(.cache.hits) / miss \(.cache.misses)
+Požadavky:    \(.stats.requests)   stažení: \(.stats.downloads)   proxy: \(.stats.proxied)   chyby: \(.stats.errors)"')"
+}
+
+# ----------------------------------------------------------------- connection
+screen_connection() {
+  while true; do
+    local who="(nepřihlášen)"
+    [ -n "$RR_TOKEN" ] && who=$(rr_api_whoami 2>/dev/null | jq -r '"\(.name) (\(.role))"' 2>/dev/null || echo "token neplatný")
+    local c
+    c=$(UI_TITLE="Připojení" menu "Server: $RR_SERVER\nUživatel: $who" \
+      server "Změnit adresu serveru" \
+      login "Přihlásit se jménem a heslem" \
+      token "Zadat API token" \
+      logout "Odhlásit" \
+      back "Zpět") || return
+    case "$c" in
+      server) local u; u=$(input "URL serveru:" "$RR_SERVER") && { RR_SERVER="$u"; rr_config_save; } ;;
+      login)
+        local user pass out
+        user=$(input "Uživatel:" "${RR_USER:-admin}") || continue
+        pass=$(secret "Heslo:") || continue
+        out=$(RR_TOKEN="" api rr_api_login "$(rr_json_obj "username==$user" "password==$pass" "tokenName=rr-gui" "ttl=2592000")") || continue
+        RR_TOKEN=$(printf '%s' "$out" | jq -r .token); RR_USER="$user"; rr_config_save
+        msg "Přihlášen jako $user." ;;
+      token) local t; t=$(input "API token:" "") && { RR_TOKEN="$t"; rr_config_save; } ;;
+      logout) rr_api_logout >/dev/null 2>&1; RR_TOKEN=""; rr_config_save; msg "Odhlášeno." ;;
+      *) return ;;
+    esac
+  done
+}
+
+# ----------------------------------------------------------------- repositories
+pick_repo() {
+  local json items
+  json=$(api rr_api_list_repos) || return 1
+  read_items < <(jsonmenu "$json" '.[] | .name, "\(.type)  \(if .default then "[výchozí] " else "" end)\(.description)"')
+  [ ${#ITEMS[@]} -gt 0 ] || { msg "Žádné repozitáře."; return 1; }
+  UI_TITLE="Repozitáře" menu "${1:-Vyberte repozitář}" "${ITEMS[@]}"
+}
+
+screen_repos() {
+  while true; do
+    local json items c
+    json=$(api rr_api_list_repos) || return
+    read_items < <(jsonmenu "$json" '.[] | .name, "\(.type)\t\(.packages // "-") bal.  \(if .default then "[výchozí] " else "" end)\(.description)"')
+    c=$(UI_TITLE="Repozitáře" menu "Správa repozitářů" "+new" "Vytvořit nový repozitář" "${ITEMS[@]}" "back" "Zpět") || return
+    case "$c" in
+      back) return ;;
+      +new)
+        local name type desc
+        name=$(input "Název repozitáře (a-z, 0-9, ._-):") || continue
+        type=$(radio "Typ repozitáře" npm "npm / yarn / pnpm / bun balíčky" ON generic "Obecné soubory" OFF) || continue
+        desc=$(input "Popis:") || continue
+        api rr_api_create_repo "$(rr_json_obj "name==$name" "type=$type" "description==$desc")" >/dev/null && msg "Repozitář $name vytvořen.\nnpm registry: ${RR_SERVER%/}/r/$name/" ;;
+      *) screen_repo "$c" ;;
+    esac
+  done
+}
+
+screen_repo() {
+  local repo="$1"
+  while true; do
+    local info type c
+    info=$(api rr_api_get_repo "$repo") || return
+    type=$(printf '%s' "$info" | jq -r .type)
+    c=$(UI_TITLE="Repozitář $repo" menu "$(printf '%s' "$info" | jq -r '"Typ: \(.type)   Veřejný: \(.public)   Publikace: \(.allowPublish)\nÚložiště: \(.storage.files) souborů, \(.storage.bytes) B"')" \
+      info "Detail (JSON)" \
+      packages "Balíčky" \
+      files "Procházet soubory" \
+      desc "Upravit popis" \
+      public "Přepnout veřejné čtení" \
+      publish "Přepnout povolení publikace" \
+      npmrc "Ukázat nastavení npm" \
+      delete "Smazat repozitář" \
+      back "Zpět") || return
+    case "$c" in
+      info) text "$(printf '%s' "$info" | jq .)" ;;
+      packages) if [ "$type" = npm ]; then screen_packages "$repo"; else screen_files "$repo" "/"; fi ;;
+      files) screen_files "$repo" "/" ;;
+      desc) local d; d=$(input "Popis:" "$(printf '%s' "$info" | jq -r .description)") && api rr_api_update_repo "$repo" "$(rr_json_obj "description==$d")" >/dev/null ;;
+      public) api rr_api_update_repo "$repo" "$(printf '%s' "$info" | jq -c '{public: (.public|not)}')" >/dev/null ;;
+      publish) api rr_api_update_repo "$repo" "$(printf '%s' "$info" | jq -c '{allowPublish: (.allowPublish|not)}')" >/dev/null ;;
+      npmrc) msg "Do ~/.npmrc nebo .npmrc projektu:\n\nregistry=${RR_SERVER%/}/r/$repo/\n${RR_SERVER#http*:}/r/$repo/:_authToken=<token>\n\nnebo: npm install <balíček> --registry ${RR_SERVER%/}/r/$repo/" 16 90 ;;
+      delete)
+        yesno "Opravdu smazat repozitář $repo?" || continue
+        local q=""; yesno "Smazat i všechny soubory na disku?" && q="purge=1"
+        api rr_api_delete_repo "$repo" "$q" >/dev/null && { msg "Smazáno."; return; } ;;
+      *) return ;;
+    esac
+  done
+}
+
+# ----------------------------------------------------------------- packages
+screen_packages() {
+  local repo="$1" filter=""
+  while true; do
+    local json items c
+    json=$(api rr_api_list_packages "$repo" "$(rr_query "q=$filter")") || return
+    read_items < <(jsonmenu "$json" '.[] | .name, "\(.version)  (\(.versions) verzí)  \(.description[0:50])"')
+    c=$(UI_TITLE="Balíčky – $repo" menu "Filtr: ${filter:-žádný}   Počet: $(printf '%s' "$json" | jq length)" \
+      "+upload" "Publikovat .tgz soubor" "+filter" "Filtrovat" "${ITEMS[@]}" "back" "Zpět") || return
+    case "$c" in
+      back) return ;;
+      +filter) filter=$(input "Filtr názvu/popisu:" "$filter") ;;
+      +upload)
+        local f tag
+        f=$(input "Cesta k .tgz souboru (npm pack):" "$PWD/") || continue
+        tag=$(input "dist-tag:" "latest") || continue
+        local r; r=$(api rr_api_upload_package "$repo" "$f" "$(rr_query "tag=$tag")") && msg "Publikováno: $(printf '%s' "$r" | jq -r '"\(.name)@\(.version)"')" ;;
+      *) screen_package "$repo" "$c" ;;
+    esac
+  done
+}
+
+screen_package() {
+  local repo="$1" pkg="$2"
+  while true; do
+    local doc c
+    doc=$(api rr_api_get_package "$repo" "$pkg") || return
+    c=$(UI_TITLE="$pkg" menu "$(printf '%s' "$doc" | jq -r '"\(.description // "")\nTagy: \(."dist-tags" | to_entries | map("\(.key)=\(.value)") | join(", "))"')" \
+      info "Detail a verze" readme "README" tag "Nastavit dist-tag" untag "Smazat dist-tag" \
+      deprecate "Označit verzi jako zastaralou" download "Stáhnout tarball" \
+      delver "Smazat verzi" delete "Smazat celý balíček" back "Zpět") || return
+    case "$c" in
+      info) text "$(printf '%s' "$doc" | jq -r '"Název: \(.name)\nPopis: \(.description)\nSprávci: \(.maintainers|map(.name)|join(", "))\nVytvořeno: \(.time.created)\nZměněno: \(.time.modified)\n\nVerze:", (.versions | to_entries[] | "  \(.key)\t\(.value.dist.size // "") B\t\(.value.deprecated // "")\t\(.value.dist.tarball)")')" ;;
+      readme) text "$(printf '%s' "$doc" | jq -r '.readme // "(bez README)"')" ;;
+      tag)
+        local t v; t=$(input "Tag:" "beta") || continue; v=$(pick_version "$doc") || continue
+        api rr_api_set_dist_tag "$repo" "$pkg" "$t" "$(rr_json_obj "version==$v")" >/dev/null ;;
+      untag) local t; t=$(input "Tag ke smazání:") && api rr_api_delete_dist_tag "$repo" "$pkg" "$t" >/dev/null ;;
+      deprecate)
+        local v m; v=$(pick_version "$doc") || continue; m=$(input "Zpráva (prázdná = zrušit):") || continue
+        api rr_api_deprecate_version "$repo" "$pkg" "$v" "$(rr_json_obj "message==$m")" >/dev/null ;;
+      download)
+        local v o; v=$(pick_version "$doc") || continue
+        o=$(input "Uložit do:" "$PWD/${pkg##*/}-$v.tgz") || continue
+        RR_OUT="$o" rr_api_download_tarball "$repo" "$pkg" "$v" 2>"$TMP/err" && msg "Uloženo: $o" || msg "Chyba: $(cat "$TMP/err")" ;;
+      delver)
+        local v; v=$(pick_version "$doc") || continue
+        yesno "Smazat $pkg@$v?" && api rr_api_delete_version "$repo" "$pkg" "$v" >/dev/null ;;
+      delete) yesno "Smazat balíček $pkg se všemi verzemi?" && api rr_api_delete_package "$repo" "$pkg" >/dev/null && return ;;
+      *) return ;;
+    esac
+  done
+}
+
+pick_version() {
+  local items
+  read_items < <(jsonmenu "$1" '.versions | keys[] | ., "verze"')
+  menu "Vyberte verzi" "${ITEMS[@]}"
+}
+
+# ----------------------------------------------------------------- files
+screen_files() {
+  local repo="$1" path="${2:-/}"
+  while true; do
+    local json items c
+    json=$(api rr_api_tree "$repo" "$(rr_query "path=$path" "depth=1")") || return
+    read_items < <(jsonmenu "$json" '.children // [] | .[] | .name + (if .type=="dir" then "/" else "" end), (if .type=="dir" then "adresář" else "\(.size) B  \(.modified[0:19])" end)')
+    c=$(UI_TITLE="Soubory – $repo" menu "Cesta: $path" ".." "O úroveň výš" "+upload" "Nahrát soubor sem" "+mkdir" "Nový adresář" "${ITEMS[@]}" "back" "Zpět") || return
+    local base="${path%/}"
+    case "$c" in
+      back) return ;;
+      ..) [ "$path" = "/" ] && return; path="$(dirname "$path")" ;;
+      +upload)
+        local f n; f=$(input "Lokální soubor:" "$PWD/") || continue
+        n=$(input "Název v repozitáři:" "$(basename "$f")") || continue
+        api rr_api_write_file "$repo" "$f" "$(rr_query "path=$base/$n")" >/dev/null && msg "Nahráno." ;;
+      +mkdir) local n; n=$(input "Název adresáře:") && api rr_api_mkdir "$repo" "$(rr_query "path=$base/$n")" >/dev/null ;;
+      */) path="$base/${c%/}" ;;
+      *) screen_file "$repo" "$base/$c" ;;
+    esac
+  done
+}
+
+screen_file() {
+  local repo="$1" file="$2" c
+  c=$(UI_TITLE="$file" menu "Soubor $file" view "Zobrazit obsah" info "Informace" download "Stáhnout" delete "Smazat" back "Zpět") || return
+  case "$c" in
+    view)
+      local size; size=$(rr_api_stat "$repo" "$(rr_query "path=$file")" | jq -r .size)
+      if [ "${size:-0}" -gt 200000 ]; then msg "Soubor je příliš velký ($size B)."; return; fi
+      if [[ "$file" == *.tgz ]]; then
+        RR_OUT="$TMP/f.tgz" rr_api_read_file "$repo" "$(rr_query "path=$file")" && text "$(tar -tzvf "$TMP/f.tgz" 2>&1)"
+      else
+        text "$(rr_api_read_file "$repo" "$(rr_query "path=$file")" | head -c 200000)"
+      fi ;;
+    info) text "$(api rr_api_stat "$repo" "$(rr_query "path=$file")" | jq .)" ;;
+    download) local o; o=$(input "Uložit do:" "$PWD/$(basename "$file")") && RR_OUT="$o" rr_api_read_file "$repo" "$(rr_query "path=$file")" && msg "Uloženo: $o" ;;
+    delete) yesno "Smazat $file?" && api rr_api_delete_file "$repo" "$(rr_query "path=$file")" >/dev/null ;;
+  esac
+}
+
+# ----------------------------------------------------------------- search
+screen_search() {
+  local q json items c
+  q=$(input "Hledat balíček (název, popis, keywords:x, scope:x):") || return
+  json=$(api rr_api_search "$(rr_query "q=$q")") || return
+  read_items < <(jsonmenu "$json" '.objects[] | "\(.repository):\(.package.name)", "\(.package.version)  \(.package.description[0:50])"')
+  [ ${#ITEMS[@]} -gt 0 ] || { msg "Nic nenalezeno."; return; }
+  c=$(UI_TITLE="Výsledky" menu "Nalezeno: $(printf '%s' "$json" | jq .total)" "${ITEMS[@]}") || return
+  screen_package "${c%%:*}" "${c#*:}"
+}
+
+# ----------------------------------------------------------------- routes
+screen_routes() {
+  while true; do
+    local json items c
+    json=$(api rr_api_list_routes) || return
+    read_items < <(jsonmenu "$json" '.[] | .id, "\(if .enabled then "●" else "○" end) \(.name)  [\(.when)] \(.matchType):\(if .pattern=="" then "*" else .pattern end)\(if .key!="" then " key=\(.key)" else "" end) → \(.target)"')
+    c=$(UI_TITLE="Směrování" menu "Pravidla routing pluginu (pořadí dle priority)" "+new" "Nové pravidlo" "+test" "Otestovat cestu" "${ITEMS[@]}" "back" "Zpět") || return
+    case "$c" in
+      back) return ;;
+      +new) route_wizard ;;
+      +test)
+        local p r k
+        p=$(input "Cesta (např. /@corp/utils nebo /lodash):" "/") || continue
+        r=$(input "Repozitář (prázdné = výchozí):") || continue
+        k=$(input "Klíč (prázdné = žádný):") || continue
+        text "$(api rr_api_test_route "$(rr_json_obj "path==$p" "repo==$r" "key==$k")" | jq -r '"Požadavek: \(.request)\n\nVždy (always):     \(.always.name // "-")  \(.always.target // "")\nPři nenalezení:    \(.notfound.name // "-")  \(.notfound.target // "")\n\nPravidla:", (.rules[] | "  \(if .matched then "✔" else "✘" end) \(.name) [\(.when)] → \(.target)")')" ;;
+      *) screen_route "$c" ;;
+    esac
+  done
+}
+
+route_wizard() {
+  local name target when matchOn matchType pattern repo key ttl prio
+  name=$(input "Název pravidla:") || return
+  target=$(input "Cílový registr (URL):" "https://registry.npmjs.org") || return
+  when=$(radio "Kdy přesměrovat" notfound "pokud balíček/soubor není lokálně" ON always "vždy (před lokálním repozitářem)" OFF) || return
+  matchOn=$(radio "Porovnávat s" package "cestou balíčku (/@scope/name)" ON path "cestou v repozitáři" OFF url "celou URL" OFF) || return
+  matchType=$(radio "Typ masky" prefix "začíná na" ON glob "glob (* ** ?)" OFF regex "regulární výraz" OFF contains "obsahuje" OFF exact "přesná shoda" OFF) || return
+  pattern=$(input "Maska (prázdné = vše):" "") || return
+  repo=$(input "Repozitář (* = všechny):" "*") || return
+  key=$(input "Směrovací klíč (prázdné = bez klíče; použití /~klic/ nebo hlavička X-RR-Key):" "") || return
+  ttl=$(input "Platnost cache v sekundách (prázdné = výchozí):" "") || return
+  prio=$(input "Priorita (nižší = dříve):" "100") || return
+  local body
+  body=$(rr_json_obj "name==$name" "target==$target" "when=$when" "matchOn=$matchOn" "matchType=$matchType" "pattern==$pattern" "repo==$repo" "key==$key" "priority=${prio:-100}")
+  [ -n "$ttl" ] && body=$(printf '%s' "$body" | jq -c --argjson t "$ttl" '. + {cacheTtl: $t}')
+  api rr_api_create_route "$body" >/dev/null && msg "Pravidlo $name vytvořeno."
+}
+
+screen_route() {
+  local id="$1"
+  while true; do
+    local r c
+    r=$(api rr_api_get_route "$id") || return
+    c=$(UI_TITLE="Pravidlo $(printf '%s' "$r" | jq -r .name)" menu "$(printf '%s' "$r" | jq -r '"\(.when) | \(.matchOn)/\(.matchType): \(.pattern) | repo \(.repo) → \(.target)"')" \
+      info "Detail (JSON)" toggle "Zapnout / vypnout" edit "Upravit pole" delete "Smazat" back "Zpět") || return
+    case "$c" in
+      info) text "$(printf '%s' "$r" | jq .)" ;;
+      toggle) api rr_api_update_route "$id" "$(printf '%s' "$r" | jq -c '{enabled: (.enabled|not)}')" >/dev/null ;;
+      edit)
+        local items f v
+        read_items < <(printf '%s' "$r" | jq -r 'to_entries[] | select(.key!="id" and .key!="headers" and .key!="header") | .key, (.value|tostring)')
+        f=$(menu "Pole k úpravě" "${ITEMS[@]}") || continue
+        v=$(input "Nová hodnota pro $f:" "$(printf '%s' "$r" | jq -r --arg f "$f" '.[$f]|if type=="array" then join(",") else tostring end')") || continue
+        api rr_api_update_route "$id" "$(rr_json_obj "$f=$v")" >/dev/null ;;
+      delete) yesno "Smazat pravidlo?" && api rr_api_delete_route "$id" >/dev/null && return ;;
+      *) return ;;
+    esac
+  done
+}
+
+# ----------------------------------------------------------------- cache
+screen_cache() {
+  while true; do
+    local s c
+    s=$(api rr_api_cache_stats) || return
+    c=$(UI_TITLE="Cache" menu "$(printf '%s' "$s" | jq -r '"Položek: \(.entries) (expirovaných \(.expired)), velikost \(.bytes) B\nHit \(.hits) / miss \(.misses) / stale \(.stale) / chyby \(.errors)"')" \
+      list "Zobrazit položky" expired "Smazat expirované" filter "Smazat dle filtru URL" all "Smazat vše" back "Zpět") || return
+    case "$c" in
+      list) text "$(api rr_api_list_cache "limit=300" | jq -r '.entries[] | "\(if .expired then "EXP" else "OK " end) \(.size)\t\(.url)"')" ;;
+      expired) msg "Smazáno: $(api rr_api_purge_cache "expired=1" | jq .removed)" ;;
+      filter) local q; q=$(input "Část URL:") && msg "Smazáno: $(api rr_api_purge_cache "$(rr_query "q=$q")" | jq .removed)" ;;
+      all) yesno "Smazat celou cache?" && msg "Smazáno: $(api rr_api_purge_cache | jq .removed)" ;;
+      *) return ;;
+    esac
+  done
+}
+
+# ----------------------------------------------------------------- users & tokens
+screen_users() {
+  while true; do
+    local json items c
+    json=$(api rr_api_list_users) || return
+    read_items < <(jsonmenu "$json" '.[] | .name, "\(.role)  \(.email // "")\(if .builtin then "  (vestavěný)" else "" end)"')
+    c=$(UI_TITLE="Uživatelé" menu "Uživatelé registru" "+new" "Nový uživatel" "${ITEMS[@]}" "back" "Zpět") || return
+    case "$c" in
+      back) return ;;
+      +new)
+        local n p r e
+        n=$(input "Jméno:") || continue; p=$(secret "Heslo:") || continue
+        r=$(radio "Role" publisher "čtení + publikace" ON reader "jen čtení" OFF admin "správce" OFF) || continue
+        e=$(input "E-mail:") || continue
+        api rr_api_create_user "$(rr_json_obj "name==$n" "password==$p" "role=$r" "email==$e")" >/dev/null && msg "Uživatel $n vytvořen." ;;
+      *)
+        local a; a=$(menu "Uživatel $c" passwd "Změnit heslo" role "Změnit roli" token "Vytvořit token" delete "Smazat") || continue
+        case "$a" in
+          passwd) local p; p=$(secret "Nové heslo:") && api rr_api_update_user "$c" "$(rr_json_obj "password==$p")" >/dev/null && msg "Heslo změněno." ;;
+          role) local r; r=$(radio "Role" publisher "" ON reader "" OFF admin "" OFF) && api rr_api_update_user "$c" "$(rr_json_obj "role=$r")" >/dev/null ;;
+          token) local t; t=$(api rr_api_create_token "$(rr_json_obj "name=rr-gui" "user==$c")") && msg "Token pro $c (uložte si ho, znovu se nezobrazí):\n\n$(printf '%s' "$t" | jq -r .token)" 14 90 ;;
+          delete) yesno "Smazat uživatele $c?" && api rr_api_delete_user "$c" >/dev/null ;;
+        esac ;;
+    esac
+  done
+}
+
+screen_tokens() {
+  while true; do
+    local json items c
+    json=$(api rr_api_list_tokens) || return
+    read_items < <(jsonmenu "$json" '.[] | .id, "\(.user)  \(.name)  \(.preview)\(if .readonly then " RO" else "" end)  \(.expires // "bez expirace")"')
+    c=$(UI_TITLE="Tokeny" menu "API tokeny" "+new" "Nový token" "${ITEMS[@]}" "back" "Zpět") || return
+    case "$c" in
+      back) return ;;
+      +new)
+        local n ro=false t
+        n=$(input "Název tokenu:" "ci") || continue
+        yesno "Pouze pro čtení?" && ro=true
+        t=$(api rr_api_create_token "$(rr_json_obj "name==$n" "readonly=$ro")") && msg "Nový token (uložte si ho, znovu se nezobrazí):\n\n$(printf '%s' "$t" | jq -r .token)" 14 90 ;;
+      *) yesno "Zneplatnit token $c?" && api rr_api_revoke_token "$c" >/dev/null ;;
+    esac
+  done
+}
+
+# ----------------------------------------------------------------- settings & logs
+screen_settings() {
+  while true; do
+    local json items c v
+    json=$(api rr_api_get_settings) || return
+    read_items < <(jsonmenu "$json" 'to_entries[] | .key, (.value|if type=="array" then join(",") else tostring end)')
+    c=$(UI_TITLE="Nastavení" menu "Nastavení serveru (uloženo v data/config/settings.json)" "${ITEMS[@]}" "back" "Zpět") || return
+    [ "$c" = back ] && return
+    v=$(input "Nová hodnota $c:" "$(printf '%s' "$json" | jq -r --arg k "$c" '.[$k]|if type=="array" then join(",") else tostring end')") || continue
+    case "$c" in
+      title|motd|defaultRepo|clientsRepo|cors) api rr_api_update_settings "$(rr_json_obj "$c==$v")" >/dev/null ;;
+      *) api rr_api_update_settings "$(rr_json_obj "$c=$v")" >/dev/null ;;
+    esac
+  done
+}
+
+screen_logs() {
+  text "$(api rr_api_get_logs "limit=200" | jq -r '"== AUDIT ==", (.audit[] | "\(.time[0:19]) \(.user) \(.action) \(.target)"), "", "== POŽADAVKY ==", (.requests[] | "\(.time[11:19]) \(.status) \(.method) \(.url) \(.ms)ms \(.user) \(.cache)")')"
+}
+
+screen_clients() {
+  local json
+  json=$(api rr_api_list_clients) || return
+  text "$(printf '%s' "$json" | jq -r '.[] | "\(.name)@\(.version)\n  \(.description)\n  stažení: \(.download)\n  \(.npmInstall)\n"')
+Instalátor: curl -fsSL ${RR_SERVER%/}/install.sh | bash"
+}
+
+# ----------------------------------------------------------------- main
+main_menu() {
+  while true; do
+    local c
+    c=$(UI_TITLE="Hlavní menu" menu "Správa registru – vyberte sekci" \
+      1 "Stav serveru" \
+      2 "Repozitáře" \
+      3 "Balíčky" \
+      4 "Procházet soubory" \
+      5 "Hledat balíčky" \
+      6 "Směrování (routing)" \
+      7 "Cache" \
+      8 "Uživatelé" \
+      9 "Tokeny" \
+      S "Nastavení serveru" \
+      L "Logy" \
+      K "Klientské balíčky" \
+      R "Přegenerovat klientské knihovny" \
+      C "Připojení / přihlášení" \
+      Q "Konec") || return
+    case "$c" in
+      1) screen_status ;;
+      2) screen_repos ;;
+      3) local r; r=$(pick_repo "Balíčky v repozitáři") && screen_packages "$r" ;;
+      4) local r; r=$(pick_repo "Procházet repozitář") && screen_files "$r" "/" ;;
+      5) screen_search ;;
+      6) screen_routes ;;
+      7) screen_cache ;;
+      8) screen_users ;;
+      9) screen_tokens ;;
+      S) screen_settings ;;
+      L) screen_logs ;;
+      K) screen_clients ;;
+      R) yesno "Znovu vygenerovat a publikovat klientské balíčky?" && text "$(api rr_api_rebuild_clients | jq .)" ;;
+      C) screen_connection ;;
+      Q) return ;;
+    esac
+  done
+}
+
+case "${1:-}" in
+  -h|--help) echo "rr-gui - RR Registry terminal GUI. Použití: rr-gui   (RR_SERVER, RR_TOKEN, RR_DIALOG=whiptail|dialog)"; exit 0 ;;
+  -v|--version) echo "rr-gui $RR_API_VERSION"; exit 0 ;;
+esac
+
+if ! rr_api_status >/dev/null 2>&1; then
+  msg "Server $RR_SERVER není dostupný. Nastavte adresu v menu Připojení."
+  screen_connection
+elif [ -z "$RR_TOKEN" ]; then
+  yesno "Nejste přihlášen(a). Přihlásit se nyní?" && screen_connection
+fi
+main_menu

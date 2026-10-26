@@ -1,0 +1,10 @@
+{
+  "name": "@m5ike/rr_bash-cli",
+  "version": "0.0.0",
+  "description": "RR Registry - bash command line client (rr) using the generated bash API library rr-api.sh",
+  "bin": { "rr": "bin/rr" },
+  "files": ["bin/", "lib/", "README.md"],
+  "keywords": ["rr-registry", "npm-registry", "cli", "bash", "m5ike"],
+  "os": ["linux", "darwin"],
+  "license": "MIT"
+}

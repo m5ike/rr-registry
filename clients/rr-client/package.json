@@ -1,0 +1,12 @@
+{
+  "name": "@m5ike/rr-client",
+  "version": "0.0.0",
+  "description": "RR Registry API client library (JavaScript/TypeScript, Node.js and browser) - generated from the server API spec",
+  "main": "rr-client.js",
+  "types": "rr-client.d.ts",
+  "browser": "rr-client.js",
+  "files": ["rr-client.js", "rr-client.d.ts", "README.md"],
+  "keywords": ["rr-registry", "npm-registry", "api-client", "m5ike"],
+  "engines": { "node": ">=18" },
+  "license": "MIT"
+}

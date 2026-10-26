@@ -1,0 +1,21 @@
+# RR Registry - configure with `make menuconfig` (writes .env), start with `make up`.
+services:
+  rr-registry:
+    build: .
+    image: m5ike/rr-registry:${RR_VERSION:-latest}
+    container_name: ${RR_CONTAINER:-rr-registry}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      RR_DATA_DIR: /data
+      RR_HOST: 0.0.0.0
+    user: "${RR_UID:-1000}:${RR_GID:-1000}"
+    ports:
+      - "${RR_BIND:-0.0.0.0}:${RR_PORT:-4873}:${RR_PORT:-4873}"
+    volumes:
+      - ${RR_DATA_PATH:-./data}:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:$${RR_PORT:-4873}/-/ping >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

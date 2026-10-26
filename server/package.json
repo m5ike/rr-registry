@@ -1,0 +1,15 @@
+{
+  "name": "@m5ike/rr-server",
+  "version": "1.0.0",
+  "description": "RR Registry - web backend server (npm compatible registry, generic repositories, routing proxy with cache, management API)",
+  "private": true,
+  "license": "MIT",
+  "author": "m5ike",
+  "maintainers": ["m5ike"],
+  "main": "src/server.js",
+  "bin": { "rr-server": "bin/rr-server.js" },
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node bin/rr-server.js"
+  }
+}

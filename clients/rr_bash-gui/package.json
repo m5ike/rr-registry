@@ -1,0 +1,10 @@
+{
+  "name": "@m5ike/rr_bash-gui",
+  "version": "0.0.0",
+  "description": "RR Registry - bash GUI (whiptail/dialog menus) for complete registry administration via rr-api.sh",
+  "bin": { "rr-gui": "bin/rr-gui" },
+  "files": ["bin/", "lib/", "README.md"],
+  "keywords": ["rr-registry", "npm-registry", "tui", "whiptail", "dialog", "m5ike"],
+  "os": ["linux", "darwin"],
+  "license": "MIT"
+}

@@ -1,0 +1,11 @@
+{
+  "name": "@m5ike/rr_web-guicli",
+  "version": "0.0.0",
+  "description": "RR Registry - Web GUI + Node.js CLI (rr-web): serve the administration web GUI locally against any RR server and call the API from the command line",
+  "bin": { "rr-web": "bin/rr-web.js" },
+  "main": "lib/rr-client.js",
+  "files": ["bin/", "lib/", "web/", "README.md"],
+  "keywords": ["rr-registry", "npm-registry", "web-gui", "cli", "m5ike"],
+  "engines": { "node": ">=18" },
+  "license": "MIT"
+}

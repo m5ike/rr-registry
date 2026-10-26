@@ -1,0 +1,67 @@
+{
+  "name": "rr-api",
+  "title": "RR Registry Management API",
+  "version": "1.0.0",
+  "basePath": "/api/v1",
+  "auth": "Authorization: Bearer <api_token | user token>  nebo  Basic <user:password>",
+  "operations": [
+    { "id": "status", "group": "system", "method": "GET", "path": "/status", "auth": "none", "summary": "Stav serveru, verze, statistiky" },
+    { "id": "getSpec", "group": "system", "method": "GET", "path": "/spec", "auth": "none", "summary": "Specifikace API (z ní se generují klientské knihovny)" },
+    { "id": "listClients", "group": "system", "method": "GET", "path": "/clients", "auth": "none", "summary": "Seznam klientských balíčků ke stažení" },
+    { "id": "rebuildClients", "group": "system", "method": "POST", "path": "/clients/rebuild", "auth": "admin", "summary": "Znovu vygenerovat klientské knihovny a publikovat je do registru" },
+    { "id": "getLogs", "group": "system", "method": "GET", "path": "/logs", "auth": "admin", "query": ["limit", "type"], "summary": "Poslední požadavky a audit log" },
+    { "id": "listPlugins", "group": "system", "method": "GET", "path": "/plugins", "auth": "admin", "summary": "Dostupné a zapnuté pluginy" },
+
+    { "id": "login", "group": "auth", "method": "POST", "path": "/auth/login", "auth": "none", "body": "json", "summary": "Přihlášení jménem a heslem -> token {username, password}" },
+    { "id": "logout", "group": "auth", "method": "POST", "path": "/auth/logout", "auth": "user", "summary": "Zneplatní aktuální token" },
+    { "id": "whoami", "group": "auth", "method": "GET", "path": "/auth/whoami", "auth": "user", "summary": "Informace o přihlášeném uživateli" },
+
+    { "id": "listRepos", "group": "repos", "method": "GET", "path": "/repos", "auth": "read", "summary": "Seznam repozitářů" },
+    { "id": "createRepo", "group": "repos", "method": "POST", "path": "/repos", "auth": "admin", "body": "json", "summary": "Vytvořit repozitář {name, type: npm|generic, description, public, allowPublish}" },
+    { "id": "getRepo", "group": "repos", "method": "GET", "path": "/repos/:repo", "auth": "read", "summary": "Detail repozitáře" },
+    { "id": "updateRepo", "group": "repos", "method": "PUT", "path": "/repos/:repo", "auth": "admin", "body": "json", "summary": "Upravit repozitář {description, public, allowPublish}" },
+    { "id": "deleteRepo", "group": "repos", "method": "DELETE", "path": "/repos/:repo", "auth": "admin", "query": ["purge"], "summary": "Smazat repozitář (purge=1 smaže i soubory)" },
+
+    { "id": "listPackages", "group": "packages", "method": "GET", "path": "/repos/:repo/packages", "auth": "read", "query": ["q"], "summary": "Balíčky v repozitáři" },
+    { "id": "uploadPackage", "group": "packages", "method": "POST", "path": "/repos/:repo/packages", "auth": "publish", "body": "binary", "query": ["tag"], "summary": "Publikovat balíček z .tgz souboru" },
+    { "id": "getPackage", "group": "packages", "method": "GET", "path": "/repos/:repo/packages/:pkg", "auth": "read", "summary": "Detail balíčku (packument)" },
+    { "id": "deletePackage", "group": "packages", "method": "DELETE", "path": "/repos/:repo/packages/:pkg", "auth": "publish", "summary": "Smazat balíček (všechny verze)" },
+    { "id": "deleteVersion", "group": "packages", "method": "DELETE", "path": "/repos/:repo/packages/:pkg/versions/:version", "auth": "publish", "summary": "Smazat verzi balíčku" },
+    { "id": "downloadTarball", "group": "packages", "method": "GET", "path": "/repos/:repo/packages/:pkg/versions/:version/tarball", "auth": "read", "response": "binary", "summary": "Stáhnout .tgz dané verze" },
+    { "id": "deprecateVersion", "group": "packages", "method": "PUT", "path": "/repos/:repo/packages/:pkg/versions/:version/deprecate", "auth": "publish", "body": "json", "summary": "Označit verzi jako zastaralou {message} (verze * = všechny)" },
+    { "id": "setDistTag", "group": "packages", "method": "PUT", "path": "/repos/:repo/packages/:pkg/dist-tags/:tag", "auth": "publish", "body": "json", "summary": "Nastavit dist-tag {version}" },
+    { "id": "deleteDistTag", "group": "packages", "method": "DELETE", "path": "/repos/:repo/packages/:pkg/dist-tags/:tag", "auth": "publish", "summary": "Smazat dist-tag" },
+    { "id": "search", "group": "packages", "method": "GET", "path": "/search", "auth": "read", "query": ["q", "repo", "size"], "summary": "Hledat balíčky ve všech npm repozitářích" },
+
+    { "id": "tree", "group": "files", "method": "GET", "path": "/repos/:repo/tree", "auth": "read", "query": ["path", "depth"], "summary": "Strom adresářů a souborů repozitáře" },
+    { "id": "stat", "group": "files", "method": "GET", "path": "/repos/:repo/stat", "auth": "read", "query": ["path"], "summary": "Informace o souboru/adresáři" },
+    { "id": "readFile", "group": "files", "method": "GET", "path": "/repos/:repo/files", "auth": "read", "query": ["path"], "response": "binary", "summary": "Obsah souboru" },
+    { "id": "writeFile", "group": "files", "method": "PUT", "path": "/repos/:repo/files", "auth": "admin", "query": ["path"], "body": "binary", "summary": "Nahrát / přepsat soubor" },
+    { "id": "deleteFile", "group": "files", "method": "DELETE", "path": "/repos/:repo/files", "auth": "admin", "query": ["path"], "summary": "Smazat soubor nebo adresář" },
+    { "id": "mkdir", "group": "files", "method": "POST", "path": "/repos/:repo/dirs", "auth": "admin", "query": ["path"], "summary": "Vytvořit adresář" },
+
+    { "id": "listRoutes", "group": "routes", "method": "GET", "path": "/routes", "auth": "admin", "summary": "Pravidla směrování (routing plugin)" },
+    { "id": "createRoute", "group": "routes", "method": "POST", "path": "/routes", "auth": "admin", "body": "json", "summary": "Přidat pravidlo {name, when, matchOn, matchType, pattern, repo, key, target, cacheTtl, ...}" },
+    { "id": "getRoute", "group": "routes", "method": "GET", "path": "/routes/:id", "auth": "admin", "summary": "Detail pravidla" },
+    { "id": "updateRoute", "group": "routes", "method": "PUT", "path": "/routes/:id", "auth": "admin", "body": "json", "summary": "Upravit pravidlo" },
+    { "id": "deleteRoute", "group": "routes", "method": "DELETE", "path": "/routes/:id", "auth": "admin", "summary": "Smazat pravidlo" },
+    { "id": "testRoute", "group": "routes", "method": "POST", "path": "/routes/test", "auth": "admin", "body": "json", "summary": "Otestovat, které pravidlo odpovídá {repo, path, key, method}" },
+
+    { "id": "cacheStats", "group": "cache", "method": "GET", "path": "/cache", "auth": "admin", "summary": "Statistiky cache" },
+    { "id": "listCache", "group": "cache", "method": "GET", "path": "/cache/entries", "auth": "admin", "query": ["q", "limit"], "summary": "Položky v cache" },
+    { "id": "purgeCache", "group": "cache", "method": "DELETE", "path": "/cache", "auth": "admin", "query": ["expired", "q"], "summary": "Vyčistit cache (vše / expired=1 / q=filtr)" },
+    { "id": "deleteCacheEntry", "group": "cache", "method": "DELETE", "path": "/cache/entries/:key", "auth": "admin", "summary": "Smazat položku cache" },
+
+    { "id": "listUsers", "group": "users", "method": "GET", "path": "/users", "auth": "admin", "summary": "Uživatelé" },
+    { "id": "createUser", "group": "users", "method": "POST", "path": "/users", "auth": "admin", "body": "json", "summary": "Vytvořit uživatele {name, password, email, role: admin|publisher|reader}" },
+    { "id": "updateUser", "group": "users", "method": "PUT", "path": "/users/:name", "auth": "admin", "body": "json", "summary": "Upravit uživatele {password, email, role}" },
+    { "id": "deleteUser", "group": "users", "method": "DELETE", "path": "/users/:name", "auth": "admin", "summary": "Smazat uživatele" },
+
+    { "id": "listTokens", "group": "tokens", "method": "GET", "path": "/tokens", "auth": "user", "summary": "Tokeny (admin vidí všechny)" },
+    { "id": "createToken", "group": "tokens", "method": "POST", "path": "/tokens", "auth": "user", "body": "json", "summary": "Vytvořit token {name, readonly, user (jen admin), ttl}" },
+    { "id": "revokeToken", "group": "tokens", "method": "DELETE", "path": "/tokens/:id", "auth": "user", "summary": "Zneplatnit token" },
+
+    { "id": "getSettings", "group": "settings", "method": "GET", "path": "/settings", "auth": "admin", "summary": "Nastavení serveru" },
+    { "id": "updateSettings", "group": "settings", "method": "PUT", "path": "/settings", "auth": "admin", "body": "json", "summary": "Změnit nastavení {defaultRepo, anonymousRead, allowRegistration, cacheTtl, tarballTtl, title, plugins}" }
+  ]
+}

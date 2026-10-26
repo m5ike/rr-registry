@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{TITLE}} – lokální registr balíčků</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="hero">
+    <div class="wrap">
+      <nav class="top">
+        <div class="brand"><img src="/static/logo.svg" alt="" width="34" height="34"> {{TITLE}}</div>
+        <div class="links"><a href="#start">Začínáme</a><a href="#clients">Klienti</a><a href="#routing">Směrování</a><a href="#api">API</a><a class="btn" href="/admin/">Administrace →</a></div>
+      </nav>
+      {{MOTD}}
+      <h1>Lokální registr balíčků pro npm a spol.</h1>
+      <p class="lead">Hostujte vlastní balíčky, zrcadlete npmjs.org s cache, směrujte požadavky na další registry
+        a spravujte vše přes web, CLI, bash GUI nebo REST API.</p>
+      <div class="pill-row">
+        <span class="pill">npm</span><span class="pill">yarn</span><span class="pill">pnpm</span><span class="pill">bun</span><span class="pill">deno npm:</span><span class="pill">generic soubory</span>
+      </div>
+      <pre class="hero-code"><code>npm config set registry {{BASE}}/</code></pre>
+      <div class="stats">
+        <div><b>{{REPOCOUNT}}</b><span>repozitářů</span></div>
+        <div><b>{{PACKAGES}}</b><span>balíčků</span></div>
+        <div><b>v{{VERSION}}</b><span>verze serveru</span></div>
+        <div><b>{{UPTIME}} min</b><span>uptime</span></div>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section id="start">
+      <h2>Začínáme</h2>
+      <div class="cols">
+        <div class="card">
+          <h3>1. Nastavte registr</h3>
+          <pre><code>npm config set registry {{BASE}}/
+# jen pro jeden projekt (.npmrc):
+registry={{BASE}}/
+# pouze vlastní scope:
+@firma:registry={{BASE}}/</code></pre>
+        </div>
+        <div class="card">
+          <h3>2. Přihlaste se a publikujte</h3>
+          <pre><code>npm login --registry {{BASE}}/ --auth-type=legacy
+# nebo token do .npmrc:
+{{HOST}}/:_authToken=&lt;token&gt;
+npm publish</code></pre>
+        </div>
+        <div class="card">
+          <h3>3. Instalujte</h3>
+          <pre><code>npm install lodash      # z cache / npmjs.org
+npm install @firma/lib  # z lokálního repozitáře
+yarn config set npmRegistryServer {{BASE}}/
+pnpm config set registry {{BASE}}/</code></pre>
+        </div>
+      </div>
+      <h3>Repozitáře</h3>
+      <div class="card table"><table><tr><th>Název</th><th>Typ</th><th>URL registru</th><th>Popis</th></tr>{{REPOS}}</table></div>
+    </section>
+
+    <section id="clients">
+      <h2>Klientské nástroje <span class="muted">(maintainer m5ike)</span></h2>
+      <p>Všechny nástroje volají správcovské API přes klientskou knihovnu, která se generuje při sestavení serveru
+        ze specifikace API. Instalace jedním příkazem (do <code>~/.local/bin</code>):</p>
+      <pre><code>curl -fsSL {{BASE}}/install.sh | bash                       # všechny klienty
+curl -fsSL {{BASE}}/install.sh | bash -s -- rr_bash-cli       # jen vybraný</code></pre>
+      <div class="cols">{{CLIENTS}}</div>
+    </section>
+
+    <section id="routing">
+      <h2>Směrování a cache</h2>
+      <div class="cols">
+        <div class="card"><h3>Pravidla</h3><p>Routing plugin přesměruje požadavek na jiný registr podle <b>masky URL</b> (prefix, glob, regex),
+          <b>části URL</b>, <b>klíče</b> (<code>/~klic/</code>, hlavička <code>X-RR-Key</code>, <code>?rr_key=</code>), hlavičky požadavku,
+          nebo pokud balíček <b>není nalezen lokálně</b>.</p></div>
+        <div class="card"><h3>Cache</h3><p>Vzdálená metadata i tarbally se ukládají do cache na disku. Další požadavky se servírují
+          přímo z ní až do vypršení platnosti; při výpadku upstreamu se použije i expirovaná kopie.</p></div>
+        <div class="card"><h3>Příklad</h3><pre><code>rr route add name=corp when=always \
+  matchType=prefix pattern=/@corp/ \
+  target=https://npm.corp.example cacheTtl=600
+npm config set registry {{BASE}}/~corp/</code></pre></div>
+      </div>
+    </section>
+
+    <section id="api">
+      <h2>Správa a API</h2>
+      <div class="cols">
+        <div class="card"><h3>Web GUI</h3><p>Grafická správa repozitářů, balíčků, souborů, pravidel, cache, uživatelů a tokenů.</p><a class="btn" href="/admin/">Otevřít administraci</a></div>
+        <div class="card"><h3>REST API</h3><p>Všechny operace jsou dostupné na <code>{{BASE}}/api/v1</code>. Specifikace: <a href="/api/v1/spec">/api/v1/spec</a>, dokumentace: <a href="/docs/API.md">API.md</a>.</p>
+          <pre><code>curl -H "Authorization: Bearer $TOKEN" \
+  {{BASE}}/api/v1/repos</code></pre></div>
+        <div class="card"><h3>Dokumentace</h3><ul>
+          <li><a href="/docs/README.md">README – přehled</a></li>
+          <li><a href="/docs/INSTALL.md">Instalace a Docker</a></li>
+          <li><a href="/docs/USAGE.md">Použití a klienti</a></li>
+          <li><a href="/docs/ROUTING.md">Směrování a cache</a></li>
+          <li><a href="/docs/API.md">Reference API</a></li></ul></div>
+      </div>
+    </section>
+  </main>
+  <footer class="wrap muted">RR Registry v{{VERSION}} · maintainer <b>m5ike</b> · <a href="/api/v1/status">status</a> · <a href="/-/ping">ping</a></footer>
+</body>
+</html>
