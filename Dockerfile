@@ -5,7 +5,8 @@ LABEL org.opencontainers.image.title="rr-registry" \
       org.opencontainers.image.description="RR Registry - npm compatible package registry with routing proxy, cache and management API" \
       org.opencontainers.image.authors="m5ike"
 
-RUN apk add --no-cache bash curl jq tini
+# git + git-daemon (git http-backend) serve git repositories over HTTP
+RUN apk add --no-cache bash curl jq tini git git-daemon
 
 WORKDIR /app
 COPY VERSION ./

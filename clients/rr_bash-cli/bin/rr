@@ -32,8 +32,15 @@ Připojení
 
 Repozitáře
   repo list | show <repo>
-  repo create <name> [npm|generic] [popis]
-  repo update <repo> key=value...       (description, public, allowPublish)
+  repo create <name> [npm|generic|docker|git|group] [popis] [key=value...]
+                                        např. repo create vse group "Vše" members=npm,internal deployTo=internal
+  repo update <repo> key=value...       (description, public, allowPublish, quotaMb, immutable,
+                                         autoCreate, members=a,b, deployTo)
+  repo policy <repo> key=value...       pravidla čištění: enabled maxVersions maxAgeDays
+                                         prereleaseOnly pattern intervalHours
+  repo acl <repo> uživatel=none|read|publish...   přístupová práva (prázdné = zrušit)
+  repo cleanup <repo> [--dry-run]       spustí čištění dle pravidel
+  repo stats <repo>                     statistiky stahování
   repo delete <repo> [--purge]
 
 Balíčky (npm repozitáře)
@@ -49,10 +56,36 @@ Soubory repozitáře
   fs cat <repo> <cesta>                 fs get <repo> <cesta> [výstup]
   fs put <repo> <cesta> <soubor>        fs rm <repo> <cesta>     fs mkdir <repo> <cesta>
 
+Git repozitáře (klonování: git clone <server>/git/<název>.git)
+  git list <repo> [filtr]               git show <repo> <název>
+  git create <repo> <název> [popis]     git rm <repo> <název>
+  git import <repo> <název> <url> [--no-mirror] [--token T] [--interval s]
+  git github <repo> <owner> [--token T] [--org|--mine] [--filter glob] [--no-mirror]
+             [--forks] [--archived] [--limit N] [--prefix P] [--interval s]
+  git log <repo> <název> [ref] [počet]  git ls <repo> <název> [ref] [cesta]
+  git cat <repo> <název> <cesta> [ref]  git archive <repo> <název> [ref] [výstup] [tar.gz|zip]
+  git sync <repo> <název> [pull|push|both]
+  git mirror <repo> <název> <url>|off [--token T] [--interval s] [--ttl s]
+  git protect <repo> <název> <větev,větev|"">
+  git push-mirror add <repo> <název> <url> [--token T] [--user U] [--create] [--public] [--branches]
+  git push-mirror rm <repo> <název> <id>
+
+Docker image
+  image list <repo> | tags <repo> <image> | rm <repo> <image> <tag> | gc <repo> [--untagged]
+
+Webhooky, události, replikace, úlohy
+  webhook list | add name=.. url=.. [events=npm.*,git.push] [repos=..] [secret=..] [format=json|slack|discord]
+  webhook update <id> key=value... | rm <id> | test <id> | deliveries [id]
+  events [počet]                        poslední události
+  replication list [status] | retry <id>
+  task list | run <id>
+
 Směrování (routing plugin) a cache
   route list | show <id>
-  route add name=.. target=.. [when=always|notfound] [matchType=prefix|glob|regex|contains|exact]
-            [matchOn=package|path|url] [pattern=..] [repo=..] [key=..] [cacheTtl=..] [priority=..]
+  route add name=.. target=.. [when=always|notfound|push] [matchType=prefix|glob|regex|contains|exact]
+            [matchOn=package|path|url] [pattern=..] [repo=..] [repoType=..] [key=..] [cacheTtl=..]
+            [priority=..] [token=..] [username=..] [replicateDeletes=true] [gitMode=mirror|branches]
+            [createMissing=true]
   route update <id> key=value...        route delete <id>
   route enable <id> | disable <id>      route test <cesta> [repo] [klíč] [metoda]
   cache stats | list [filtr] | purge [--expired] [filtr] | rm <klíč>
@@ -115,9 +148,22 @@ cmd_repo() {
         rr_api_list_repos | jq -r '(["NAME","TYPE","PACKAGES","PUBLIC","DEFAULT","DESCRIPTION"]|@tsv),(.[]|[.name,.type,(.packages//"-"),.public,.default,.description]|@tsv)' | column -t -s $'\t'
       else rr_api_list_repos; fi ;;
     show) need 1 "$@"; rr_api_get_repo "$1" | rr_json ;;
-    create|add) need 1 "$@"; rr_api_create_repo "$(kv_json "name=$1" "type=${2:-npm}" "description==${3:-}")" | rr_json ;;
+    create|add) need 1 "$@"; rr_api_create_repo "$(kv_json "name=$1" "type=${2:-npm}" "description==${3:-}" "${@:4}")" | rr_json ;;
     update) need 1 "$@"; local r="$1"; shift; rr_api_update_repo "$r" "$(kv_json "$@")" | rr_json ;;
     delete|rm) need 1 "$@"; local q=""; [ "${2:-}" = "--purge" ] && q="purge=1"; rr_api_delete_repo "$1" "$q" | rr_json ;;
+    policy|retention) need 2 "$@"; local r="$1"; shift; rr_api_update_repo "$r" "{\"cleanup\":$(kv_json "$@")}" | rr_json '{name, cleanup}' ;;
+    acl)
+      need 1 "$@"; local r="$1"; shift
+      local acl='{}'; [ $# -gt 0 ] && acl="$(kv_json "$@")"
+      rr_api_update_repo "$r" "{\"acl\":$acl}" | rr_json '{name, public, acl}' ;;
+    cleanup)
+      need 1 "$@"; local dry=false; [ "${2:-}" = "--dry-run" ] && dry=true
+      if rr_have_jq; then rr_api_run_cleanup "$1" "{\"dryRun\":$dry}" | jq -r '"dryRun: \(.dryRun)  freed: \(.freedBytes) B", (.actions[] | "  \(.action) \(.target)  (\(.reason // ""))")'
+      else rr_api_run_cleanup "$1" "{\"dryRun\":$dry}"; fi ;;
+    stats)
+      need 1 "$@"
+      if rr_have_jq; then rr_api_get_repo_stats "$1" | jq -r '"celkem: \(.total)  poslední: \(.last // "-")", "nejstahovanější:", (.top[] | "  \(.downloads)\t\(.item)")'
+      else rr_api_get_repo_stats "$1"; fi ;;
     *) rr_die "neznámý příkaz repo $sub" ;;
   esac
 }
@@ -250,6 +296,141 @@ cmd_settings() {
   esac
 }
 
+# parse --flag value options into OPT_<flag> variables, positional args into ARGS
+parse_opts() {
+  ARGS=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --token|--interval|--ttl|--filter|--limit|--prefix|--user) eval "OPT_${1#--}=\"\$2\""; shift 2 ;;
+      --*) eval "OPT_$(printf '%s' "${1#--}" | tr '-' '_')=1"; shift ;;
+      *) ARGS+=("$1"); shift ;;
+    esac
+  done
+}
+
+cmd_git() {
+  local sub="${1:-list}"; shift || true
+  OPT_token=""; OPT_interval=""; OPT_ttl=""; OPT_filter=""; OPT_limit=""; OPT_prefix=""; OPT_user=""
+  OPT_no_mirror=""; OPT_org=""; OPT_user_kind=""; OPT_mine=""; OPT_forks=""; OPT_archived=""; OPT_create=""; OPT_public=""; OPT_branches=""
+  parse_opts "$@"
+  set -- "${ARGS[@]+"${ARGS[@]}"}"
+  case "$sub" in
+    list|ls-repos)
+      need 1 "$@"
+      if rr_have_jq; then
+        rr_api_list_git_repos "$1" "$(rr_query "q=${2:-}")" | jq -r '(["NAME","MIRROR","PUSH-MIRRORS","DESCRIPTION"]|@tsv),(.[]|[.name,(if .mirror then "\(.mirror.status) \(.mirror.lastSync // "")" else "-" end),.pushMirrors,.description]|@tsv)' | column -t -s $'\t'
+      else rr_api_list_git_repos "$1" "$(rr_query "q=${2:-}")"; fi ;;
+    show|info)
+      need 2 "$@"
+      if rr_have_jq; then
+        rr_api_get_git_repo "$1" "$2" | jq -r '"\(.name)  \(.description)", "clone:   \(.cloneUrl)", "default: \(.defaultBranch // "-")   velikost: \(.size) B   chráněné: \(.protectedBranches|join(","))",
+          (if .mirror then "zrcadlo: \(.mirror.url)  [\(.mirror.status)] poslední sync \(.mirror.lastSync // "-")  interval \(.mirror.interval)s\n         webhook: \(.mirror.webhookUrl) (secret \(.mirror.webhookSecret))" else empty end),
+          (.pushMirrors[] | "push →   \(.id) \(.url) [\(.status)] \(.lastPush // "")\(if .lastError then " " + .lastError else "" end)"),
+          "větve:", (.branches[] | "  \(.name)\t\(.commit[0:8])  \(.date)  \(.subject)"), "tagy:", (.tags[] | "  \(.name)\t\(.commit[0:8])")'
+      else rr_api_get_git_repo "$1" "$2"; fi ;;
+    create|new) need 2 "$@"; rr_api_create_git_repo "$1" "$(kv_json "name==$2" "description==${3:-}")" | rr_json '{name, cloneUrl, defaultBranch}' ;;
+    import)
+      need 3 "$@"
+      local mirror=true; [ -n "$OPT_no_mirror" ] && mirror=false
+      rr_api_create_git_repo "$1" "$(kv_json "name==$2" "importUrl==$3" "mirror=$mirror" "token==$OPT_token" "interval=${OPT_interval:-3600}")" | rr_json '{name, cloneUrl, defaultBranch, mirror: (.mirror|if . then {url, status} else null end)}' ;;
+    github)
+      need 1 "$@"
+      local kind=auto mirror=true
+      [ -n "$OPT_org" ] && kind=org; [ -n "$OPT_mine" ] && kind=mine; [ -n "$OPT_user_kind" ] && kind=user
+      [ -n "$OPT_no_mirror" ] && mirror=false
+      local body
+      body=$(kv_json "owner==${2:-}" "token==$OPT_token" "kind=$kind" "mirror=$mirror" "filter==$OPT_filter" "limit=${OPT_limit:-100}" "interval=${OPT_interval:-3600}" "includeForks=${OPT_forks:+true}" "includeArchived=${OPT_archived:+true}")
+      [ -n "$OPT_prefix" ] && body="${body%\}},\"prefix\":$(rr_json_str "$OPT_prefix")}"
+      if rr_have_jq; then rr_api_github_import "$1" "$body" | jq -r '"nalezeno: \(.found), vybráno: \(.selected)", (.results[] | "  \(.status)\t\(.name)\(if .error then "  " + .error else "" end)")'
+      else rr_api_github_import "$1" "$body"; fi ;;
+    log|commits)
+      need 2 "$@"
+      if rr_have_jq; then rr_api_git_commits "$1" "$2" "$(rr_query "ref=${3:-}" "limit=${4:-20}")" | jq -r '.[] | "\(.short)  \(.date[0:10])  \(.author)  \(.subject)"'
+      else rr_api_git_commits "$1" "$2" "$(rr_query "ref=${3:-}" "limit=${4:-20}")"; fi ;;
+    ls|tree)
+      need 2 "$@"
+      if rr_have_jq; then rr_api_git_tree "$1" "$2" "$(rr_query "ref=${3:-}" "path=${4:-}")" | jq -r '.entries[] | "\(if .type=="dir" then "📁" else "📄" end) \(.path)\(if .type=="file" then "  (\(.size) B)" else "" end)"'
+      else rr_api_git_tree "$1" "$2" "$(rr_query "ref=${3:-}" "path=${4:-}")"; fi ;;
+    cat|show-file) need 3 "$@"; rr_api_git_blob "$1" "$2" "$(rr_query "path=$3" "ref=${4:-}")" ;;
+    archive)
+      need 2 "$@"
+      local fmt="${5:-tar.gz}" out="${4:-$(basename "$2")-${3:-HEAD}.${5:-tar.gz}}"
+      RR_OUT="$out" rr_api_git_archive "$1" "$2" "$(rr_query "ref=${3:-}" "format=$fmt")" && echo "uloženo: $out" ;;
+    sync) need 2 "$@"; rr_api_git_sync "$1" "$2" "$(kv_json "direction=${3:-both}")" | rr_json ;;
+    mirror)
+      need 3 "$@"
+      if [ "$3" = "off" ]; then rr_api_update_git_repo "$1" "$2" '{"mirror":null}' | rr_json '{name, mirror}'
+      else rr_api_update_git_repo "$1" "$2" "{\"mirror\":$(kv_json "url==$3" "token==$OPT_token" "interval=${OPT_interval:-3600}" "ttl=${OPT_ttl:-300}" "enabled=true")}" | rr_json '{name, mirror}'; fi ;;
+    protect) need 2 "$@"; rr_api_update_git_repo "$1" "$2" "$(kv_json "protectedBranches==${3:-}")" | rr_json '{name, protectedBranches}' ;;
+    push-mirror|pm)
+      local act="${1:-}"; shift || true
+      case "$act" in
+        add)
+          need 3 "$@"
+          local mode=mirror priv=true create=false
+          [ -n "$OPT_branches" ] && mode=branches; [ -n "$OPT_public" ] && priv=false; [ -n "$OPT_create" ] && create=true
+          rr_api_add_git_push_mirror "$1" "$2" "$(kv_json "url==$3" "token==$OPT_token" "username==$OPT_user" "mode=$mode" "createMissing=$create" "private=$priv")" | rr_json ;;
+        rm|delete) need 3 "$@"; rr_api_delete_git_push_mirror "$1" "$2" "$3" | rr_json ;;
+        *) rr_die "git push-mirror add|rm" ;;
+      esac ;;
+    rm|delete) need 2 "$@"; rr_api_delete_git_repo "$1" "$2" | rr_json ;;
+    *) rr_die "neznámý příkaz git $sub" ;;
+  esac
+}
+
+cmd_image() {
+  local sub="${1:-list}"; shift || true
+  case "$sub" in
+    list|ls)
+      need 1 "$@"
+      if rr_have_jq; then rr_api_list_images "$1" | jq -r '(["IMAGE","TAGS","SIZE","UPDATED"]|@tsv),(.[]|[.name,.tags,.size,(.updated//"")]|@tsv)' | column -t -s $'\t'
+      else rr_api_list_images "$1"; fi ;;
+    tags) need 2 "$@"; rr_api_list_image_tags "$1" "$2" | rr_json ;;
+    rm|delete) need 3 "$@"; rr_api_delete_image_tag "$1" "$2" "$3" | rr_json ;;
+    gc) need 1 "$@"; local u=false; [ "${2:-}" = "--untagged" ] && u=true; rr_api_docker_gc "$1" "{\"untagged\":$u}" | rr_json ;;
+    *) rr_die "neznámý příkaz image $sub" ;;
+  esac
+}
+
+cmd_webhook() {
+  local sub="${1:-list}"; shift || true
+  case "$sub" in
+    list|ls)
+      if rr_have_jq; then rr_api_list_webhooks | jq -r '(["ID","NAME","ON","EVENTS","REPOS","FORMAT","URL","LAST"]|@tsv),(.[]|[.id,.name,.enabled,(.events|join(",")),(.repos|join(",")),.format,.url,(if .lastDelivery then "\(.lastDelivery.status) \(.lastDelivery.time)" else "-" end)]|@tsv)' | column -t -s $'\t'
+      else rr_api_list_webhooks; fi ;;
+    add|create) rr_api_create_webhook "$(kv_json "$@")" | rr_json ;;
+    update) need 1 "$@"; local id="$1"; shift; rr_api_update_webhook "$id" "$(kv_json "$@")" | rr_json ;;
+    rm|delete) need 1 "$@"; rr_api_delete_webhook "$1" | rr_json ;;
+    test) need 1 "$@"; rr_api_test_webhook "$1" | rr_json ;;
+    deliveries)
+      if rr_have_jq; then rr_api_list_webhook_deliveries "$(rr_query "id=${1:-}" "limit=30")" | jq -r '.[] | "\(.time)  \(.status)  \(if .ok then "OK " else "ERR" end)  \(.hook)  \(.event)  #\(.attempt)  \(.error // "")"'
+      else rr_api_list_webhook_deliveries "$(rr_query "id=${1:-}")"; fi ;;
+    *) rr_die "neznámý příkaz webhook $sub" ;;
+  esac
+}
+
+cmd_replication() {
+  local sub="${1:-list}"; shift || true
+  case "$sub" in
+    list|ls)
+      if rr_have_jq; then rr_api_list_replications "$(rr_query "status=${1:-}")" | jq -r '(["ID","STATUS","RULE","EVENT","REPO","ITEM","TRY","ERROR"]|@tsv),(.[]|[.id,.status,.ruleName,.event,.repo,.item,.attempts,(.error//"")]|@tsv)' | column -t -s $'\t'
+      else rr_api_list_replications "$(rr_query "status=${1:-}")"; fi ;;
+    retry) need 1 "$@"; rr_api_retry_replication "$1" | rr_json ;;
+    *) rr_die "neznámý příkaz replication $sub" ;;
+  esac
+}
+
+cmd_task() {
+  local sub="${1:-list}"; shift || true
+  case "$sub" in
+    list|ls)
+      if rr_have_jq; then rr_api_list_tasks | jq -r '(["ID","INTERVAL","LAST RUN","NEXT RUN","ERROR"]|@tsv),(.[]|[.id,"\(.intervalSec)s",(.lastRun//"-"),(.nextRun//"-"),(.lastError//"")]|@tsv)' | column -t -s $'\t'
+      else rr_api_list_tasks; fi ;;
+    run) need 1 "$@"; rr_api_run_task "$1" | rr_json ;;
+    *) rr_die "neznámý příkaz task $sub" ;;
+  esac
+}
+
 cmd_npmrc() {
   local repo="${1:-}" reg host
   if [ -n "$repo" ]; then reg="${RR_SERVER%/}/r/$repo/"; else reg="${RR_SERVER%/}/"; fi
@@ -272,6 +453,14 @@ main() {
     pkg|package|packages) cmd_pkg "$@" ;;
     search) cmd_search "$@" ;;
     fs|files) cmd_fs "$@" ;;
+    git) cmd_git "$@" ;;
+    image|images|docker) cmd_image "$@" ;;
+    webhook|webhooks|hook) cmd_webhook "$@" ;;
+    events)
+      if rr_have_jq; then rr_api_list_events "$(rr_query "limit=${1:-30}")" | jq -r '.events[] | "\(.time)  \(.type)  \(.repo // "-")  \(.user)  \(.data.name // .data.path // "")"'
+      else rr_api_list_events "$(rr_query "limit=${1:-30}")"; fi ;;
+    replication|replications|repl) cmd_replication "$@" ;;
+    task|tasks) cmd_task "$@" ;;
     route|routes) cmd_route "$@" ;;
     cache) cmd_cache "$@" ;;
     user|users) cmd_user "$@" ;;

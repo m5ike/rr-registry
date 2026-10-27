@@ -3,6 +3,7 @@
 // returns an object with optional hooks:
 //   beforeLocal(ctx) -> true when the request was handled (called before the local repository)
 //   onNotFound(ctx)  -> true when handled (called when the local repository has no such item)
+//   onEvent(event)  -> notified about every registry event (publish, push, upload, delete, ...)
 //   onStart()/onStop()
 // Built-in plugins live in this directory, custom ones may be dropped into <data>/plugins/*.js.
 const fs = require('fs');
@@ -49,6 +50,14 @@ class PluginManager {
   info() {
     const enabled = new Set(this.plugins.map((p) => p.name));
     return Object.values(this.available).map((m) => ({ name: m.name, description: m.description || '', enabled: enabled.has(m.name) }));
+  }
+
+  /** Call `hook` on every plugin (events) - errors are logged, never thrown. */
+  async notify(hook, arg) {
+    for (const p of this.plugins) {
+      if (typeof p.inst[hook] !== 'function') continue;
+      try { await p.inst[hook](arg); } catch (e) { this.app.log.warn(`plugin ${p.name}.${hook}: ${e.message}`); }
+    }
   }
 
   async run(hook, ctx) {

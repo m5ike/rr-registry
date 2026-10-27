@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const { HttpError, NotFoundLocal, send, sendJson, readBody, mimeType } = require('../util/http');
 const { mkdirp } = require('../util/store');
 const files = require('./files');
+const { checkQuota, assertMutable, invalidate } = require('../policies');
 
 function esc(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -36,6 +37,36 @@ class GenericRepo {
     return out;
   }
 
+  /**
+   * Retention policy (repo.cleanup): in every directory keep the newest `maxVersions` files and/or delete
+   * files older than `maxAgeDays`; `pattern` (glob on the file path) limits which files are considered.
+   */
+  cleanup(policy = {}, { dryRun = false } = {}) {
+    const { globToRegex } = require('../plugins/router');
+    const re = policy.pattern ? globToRegex(policy.pattern) : null;
+    const max = Number(policy.maxVersions) || 0;
+    const age = Number(policy.maxAgeDays) || 0;
+    const actions = [];
+    const walk = (node) => {
+      const kids = node.children || [];
+      const fileList = kids.filter((c) => c.type === 'file' && (!re || re.test(c.path))).sort((a, b) => b.modified.localeCompare(a.modified));
+      fileList.forEach((f, i) => {
+        const old = age && Date.now() - Date.parse(f.modified) > age * 86400000;
+        if ((max && i >= max) || old) actions.push({ action: 'delete-file', target: f.path, size: f.size, reason: old ? `older than ${age} days` : `more than ${max} files in directory` });
+      });
+      kids.filter((c) => c.type === 'dir').forEach(walk);
+    };
+    walk(files.tree(this.dir, '/', 20));
+    let freedBytes = 0;
+    if (!dryRun) {
+      for (const a of actions) {
+        try { files.remove(this.dir, a.target); freedBytes += a.size; } catch { /* already gone */ }
+      }
+      invalidate(this);
+    }
+    return { actions, freedBytes };
+  }
+
   async handle(ctx) {
     const { req, res, method } = ctx;
     const rel = ctx.path;
@@ -56,20 +87,31 @@ class GenericRepo {
       const etag = `"${crypto.createHash('sha1').update(f.data).digest('hex')}"`;
       if (req.headers['if-none-match'] === etag) return send(res, 304, null, { etag });
       this.app.stats.downloads++;
+      if (method === 'GET') this.app.statsStore.hit(this.conf.name, rel);
       return send(res, 200, f.data, { 'content-type': mimeType(rel), etag, 'last-modified': f.stat.mtime.toUTCString() });
     }
     if (method === 'PUT') {
       const id = this.app.auth.require(req, 'publish', this.conf);
       if (this.conf.allowPublish === false) throw new HttpError(403, 'publishing disabled');
+      let exists = false;
+      try { exists = files.stat(this.dir, rel).type === 'file'; } catch { /* new file */ }
+      if (exists) assertMutable(this.conf, 'overwriting files');
+      checkQuota(this, Number(req.headers['content-length']) || 0);
       const data = await readBody(req, this.app.config.maxBody);
+      checkQuota(this, data.length);
       const r = files.write(this.dir, rel, data);
+      invalidate(this);
       this.app.audit(id, 'upload', `${this.conf.name}${r.path}`);
+      this.app.events.emit('file.upload', { repo: this.conf.name, path: r.path, size: r.size, overwritten: exists }, id);
       return sendJson(res, 201, { ok: true, ...r });
     }
     if (method === 'DELETE') {
       const id = this.app.auth.require(req, 'publish', this.conf);
+      assertMutable(this.conf, 'deleting files');
       files.remove(this.dir, rel);
+      invalidate(this);
       this.app.audit(id, 'delete', `${this.conf.name}${rel}`);
+      this.app.events.emit('file.delete', { repo: this.conf.name, path: rel }, id);
       return sendJson(res, 200, { ok: true });
     }
     throw new HttpError(405, 'method not allowed');

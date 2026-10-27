@@ -44,6 +44,10 @@ if [ "${1:-}" = "--docker" ]; then
   contains "container client packages" "@m5ike/rr_web-guicli" curl -fsS "http://localhost:$PORT/downloads/"
   contains "container admin API with token" '"npm"' curl -fsS -H "Authorization: Bearer docker-test-token-1234" "http://localhost:$PORT/api/v1/repos"
   contains "container healthcheck defined" "ping" docker inspect --format '{{json .Config.Healthcheck}}' "$CID"
+  GW="$TMP/dgit"; mkdir -p "$GW"
+  ( cd "$GW" && git init -q -b main p && cd p && echo docker >README && git add . && git -c user.email=t@t -c user.name=T commit -qm init )
+  check "container git push (git http-backend)" git -C "$GW/p" -c credential.helper= push -q "http://admin:dockerpw@localhost:$PORT/git/d/p.git" main
+  contains "container git clone" "docker" bash -c "git -c credential.helper= clone -q http://localhost:$PORT/git/d/p.git '$GW/c' && cat '$GW/c/README'"
   summary; exit $?
 fi
 
@@ -124,6 +128,48 @@ contains "rr call (raw API)" '"name": "internal"' "$RR" call get_repo internal
 contains "rr chyba vrací exit 1" "not found" bash -c "\"$RR\" repo show neexistuje; echo exit=\$?"
 contains "rr login" "přihlášen jako admin" bash -c "printf 'e2epass\n' | RR_TOKEN= \"$RR\" login admin"
 
+echo "== git repozitáře =="
+GW="$TMP/gitwork"; mkdir -p "$GW"
+GIT=(git -c credential.helper= -c user.email=e2e@example.com -c user.name=E2E)
+( cd "$GW" && "${GIT[@]}" init -q -b main p && cd p && echo "e2e" >README.md && "${GIT[@]}" add . && "${GIT[@]}" commit -qm "first commit" )
+check "git push vytvoří repozitář" "${GIT[@]}" -C "$GW/p" push -q "http://admin:e2epass@127.0.0.1:$PORT/git/e2e/proj.git" main
+contains "git push bez přihlášení odmítnut" "terminal prompts disabled\|Authentication\|401" bash -c "GIT_TERMINAL_PROMPT=0 git -c credential.helper= -C '$GW/p' push '$RR_SERVER/git/e2e/proj.git' main 2>&1"
+check "git clone" "${GIT[@]}" clone -q "$RR_SERVER/git/e2e/proj.git" "$GW/clone"
+contains "naklonovaný obsah" "e2e" cat "$GW/clone/README.md"
+contains "rr git list" "e2e/proj" "$RR" git list git
+contains "rr git show" "clone:" "$RR" git show git e2e/proj
+contains "rr git log" "first commit" "$RR" git log git e2e/proj main 5
+contains "rr git ls" "README.md" "$RR" git ls git e2e/proj main
+contains "rr git cat" "e2e" "$RR" git cat git e2e/proj README.md main
+contains "rr git protect" '"main"' "$RR" git protect git e2e/proj main
+( cd "$GW/p" && "${GIT[@]}" commit -q --amend -m rewritten )
+contains "force-push do chráněné větve odmítnut" "protected" bash -c "git -c credential.helper= -C '$GW/p' push -f 'http://admin:e2epass@127.0.0.1:$PORT/git/e2e/proj.git' main 2>&1"
+"${GIT[@]}" init -q --bare "$GW/upstream.git" && "${GIT[@]}" -C "$GW/clone" push -q "$GW/upstream.git" main
+contains "rr git import (zrcadlo)" '"status": "ok"' "$RR" git import git mirror/up "file://$GW/upstream.git" --interval 0
+contains "rr git sync" '"ok": true' "$RR" git sync git mirror/up pull
+"${GIT[@]}" init -q --bare "$GW/target.git"
+contains "rr git push-mirror add" '"mode": "mirror"' "$RR" git push-mirror add git e2e/proj "file://$GW/target.git"
+contains "rr git sync push" '"ok": true' "$RR" git sync git e2e/proj push
+contains "push zrcadlo obsahuje main" "refs/heads/main" git ls-remote "$GW/target.git"
+check "rr git archive" "$RR" git archive git e2e/proj main "$TMP/p.tgz"
+check "archiv je platný tar.gz" tar -tzf "$TMP/p.tgz"
+
+echo "== pokročilé funkce repozitářů =="
+contains "rr repo create group" '"group"' "$RR" repo create skupina group "Skupina" members=internal,npm deployTo=internal
+contains "rr repo update (členové skupiny)" '"members"' "$RR" repo update skupina members=npm,internal
+contains "skupina slučuje balíčky" "@e2e/hello" curl -fsS "$RR_SERVER/r/skupina/@e2e%2fhello"
+contains "rr repo policy" '"maxVersions": 5' "$RR" repo policy internal enabled=true maxVersions=5
+contains "rr repo acl" '"eve": "read"' "$RR" repo acl internal eve=read
+contains "rr repo cleanup --dry-run" "dryRun: true" "$RR" repo cleanup internal --dry-run
+contains "rr repo stats" "celkem:" "$RR" repo stats npm
+contains "rr webhook add" '"name": "e2e"' "$RR" webhook add name=e2e url=http://127.0.0.1:9/hook events=git.*,npm.publish
+contains "rr webhook list" "e2e" "$RR" webhook list
+contains "rr events" "git.push" "$RR" events 50
+contains "rr task list" "git-mirrors" "$RR" task list
+contains "rr task run" '"runs": 1' "$RR" task run cache-expired
+contains "rr route add push" '"push"' "$RR" route add name=repl when=push repo=internal target=http://127.0.0.1:9 token=x
+contains "rr replication list" "STATUS" "$RR" replication list
+
 echo "== rr-api.sh knihovna =="
 contains "rr_api_* funkce" '"version"' bash -c ". '$ROOT/dist/clients/rr_bash-cli/lib/rr-api.sh'; rr_api_status"
 contains "rr_urlencode" "%40scope%2Fname" bash -c ". '$ROOT/dist/clients/rr_bash-cli/lib/rr-api.sh'; rr_urlencode @scope/name"
@@ -133,6 +179,7 @@ echo "== bash GUI (rr-gui) =="
 check "rr-gui syntaxe" bash -n "$ROOT/dist/clients/rr_bash-gui/bin/rr-gui"
 check "rr-gui syntaxe (bash 3.2 kompatibilita /bin/bash)" /bin/bash -n "$ROOT/dist/clients/rr_bash-gui/bin/rr-gui"
 contains "rr-gui --version" "rr-gui" "$ROOT/dist/clients/rr_bash-gui/bin/rr-gui" --version
+contains "rr-gui obsahuje git menu" "screen_git_repo" cat "$ROOT/dist/clients/rr_bash-gui/bin/rr-gui"
 
 echo "== rr-web (Node CLI + Web GUI) =="
 RW="$ROOT/dist/clients/rr_web-guicli/bin/rr-web.js"

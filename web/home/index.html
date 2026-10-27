@@ -12,14 +12,14 @@
     <div class="wrap">
       <nav class="top">
         <div class="brand"><img src="/static/logo.svg" alt="" width="34" height="34"> {{TITLE}}</div>
-        <div class="links"><a href="#start">Začínáme</a><a href="#clients">Klienti</a><a href="#routing">Směrování</a><a href="#api">API</a><a class="btn" href="/admin/">Administrace →</a></div>
+        <div class="links"><a href="#start">Začínáme</a><a href="#clients">Klienti</a><a href="#git">Git</a><a href="#routing">Směrování</a><a href="#api">API</a><a class="btn" href="/admin/">Administrace →</a></div>
       </nav>
       {{MOTD}}
       <h1>Lokální registr balíčků pro npm a spol.</h1>
       <p class="lead">Hostujte vlastní balíčky, zrcadlete npmjs.org s cache, směrujte požadavky na další registry
         a spravujte vše přes web, CLI, bash GUI nebo REST API.</p>
       <div class="pill-row">
-        <span class="pill">npm</span><span class="pill">yarn</span><span class="pill">pnpm</span><span class="pill">bun</span><span class="pill">deno npm:</span><span class="pill">generic soubory</span>
+        <span class="pill">npm</span><span class="pill">yarn</span><span class="pill">pnpm</span><span class="pill">bun</span><span class="pill">deno npm:</span><span class="pill">docker</span><span class="pill">git</span><span class="pill">generic soubory</span>
       </div>
       <pre class="hero-code"><code>npm config set registry {{BASE}}/</code></pre>
       <div class="stats">
@@ -71,6 +71,19 @@ curl -fsSL {{BASE}}/install.sh | bash -s -- rr_bash-cli       # jen vybraný</co
       <div class="cols">{{CLIENTS}}</div>
     </section>
 
+    <section id="git">
+      <h2>Git repozitáře</h2>
+      <div class="cols">
+        <div class="card"><h3>Push a clone</h3><pre><code>git remote add rr {{BASE}}/git/tym/projekt.git
+git push rr main   # vytvoří repozitář
+git clone {{BASE}}/git/tym/projekt.git</code></pre></div>
+        <div class="card"><h3>Zrcadla GitHubu</h3><p><b>Pull zrcadlo</b> udržuje lokální kopii repozitáře z GitHubu (plánovaně, při přístupu nebo webhookem),
+          <b>push zrcadlo</b> po každém push odešle změny na GitHub. Hromadný import celé organizace jedním příkazem.</p>
+          <pre><code>rr git github git moje-org --token ghp_…</code></pre></div>
+        <div class="card"><h3>Ochrana a správa</h3><p>Chráněné větve, neměnné repozitáře, kvóty, přístupová práva, webhooky a procházení kódu ve Web GUI.</p></div>
+      </div>
+    </section>
+
     <section id="routing">
       <h2>Směrování a cache</h2>
       <div class="cols">
@@ -98,6 +111,8 @@ npm config set registry {{BASE}}/~corp/</code></pre></div>
           <li><a href="/docs/INSTALL.md">Instalace a Docker</a></li>
           <li><a href="/docs/USAGE.md">Použití a klienti</a></li>
           <li><a href="/docs/ROUTING.md">Směrování a cache</a></li>
+          <li><a href="/docs/GIT.md">Git repozitáře a zrcadla</a></li>
+          <li><a href="/docs/ADVANCED.md">Pokročilé funkce repozitářů</a></li>
           <li><a href="/docs/API.md">Reference API</a></li></ul></div>
       </div>
     </section>

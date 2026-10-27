@@ -5,7 +5,7 @@
 | Režim | Požadavky |
 |---|---|
 | Docker (doporučeno) | Docker 20+ s `docker compose`, `make`, `bash`, `curl` |
-| Lokálně (bez Dockeru) | Node.js ≥ 18, `make`, `bash`, `curl` |
+| Lokálně (bez Dockeru) | Node.js ≥ 18, `make`, `bash`, `curl`, `git` (pro git repozitáře) |
 | `make menuconfig` GUI | `whiptail` nebo `dialog` (jinak textové dotazy) |
 | Bash klienti | `bash`, `curl`, `jq` (GUI vyžaduje i `whiptail`/`dialog`) |
 

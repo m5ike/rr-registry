@@ -58,6 +58,22 @@
       "summary": "Dostupné a zapnuté pluginy"
     },
     {
+      "id": "listTasks",
+      "group": "system",
+      "method": "GET",
+      "path": "/tasks",
+      "auth": "admin",
+      "summary": "Naplánované úlohy (zrcadla, čištění, cache)"
+    },
+    {
+      "id": "runTask",
+      "group": "system",
+      "method": "POST",
+      "path": "/tasks/:id/run",
+      "auth": "admin",
+      "summary": "Spustit úlohu hned"
+    },
+    {
       "id": "login",
       "group": "auth",
       "method": "POST",
@@ -97,7 +113,7 @@
       "path": "/repos",
       "auth": "admin",
       "body": "json",
-      "summary": "Vytvořit repozitář {name, type: npm|generic|docker, description, public, allowPublish}"
+      "summary": "Vytvořit repozitář {name, type: npm|generic|docker|git|group, description, public, allowPublish, quotaMb, immutable, acl, cleanup, members, deployTo, autoCreate}"
     },
     {
       "id": "getRepo",
@@ -114,7 +130,7 @@
       "path": "/repos/:repo",
       "auth": "admin",
       "body": "json",
-      "summary": "Upravit repozitář {description, public, allowPublish}"
+      "summary": "Upravit repozitář {description, public, allowPublish, quotaMb, immutable, acl: {uživatel: none|read|publish}, cleanup: {enabled, maxVersions, maxAgeDays, prereleaseOnly, pattern, intervalHours}, members, deployTo, autoCreate}"
     },
     {
       "id": "deleteRepo",
@@ -126,6 +142,26 @@
         "purge"
       ],
       "summary": "Smazat repozitář (purge=1 smaže i soubory)"
+    },
+    {
+      "id": "runCleanup",
+      "group": "repos",
+      "method": "POST",
+      "path": "/repos/:repo/cleanup",
+      "auth": "admin",
+      "summary": "Spustit čištění dle pravidel retence {dryRun, policy?: {maxVersions, maxAgeDays, prereleaseOnly, pattern}}",
+      "body": "json"
+    },
+    {
+      "id": "getRepoStats",
+      "group": "repos",
+      "method": "GET",
+      "path": "/repos/:repo/stats",
+      "auth": "read",
+      "summary": "Statistiky stahování repozitáře (celkem, nejstahovanější, posledních 30 dní)",
+      "query": [
+        "top"
+      ]
     },
     {
       "id": "listPackages",
@@ -325,6 +361,137 @@
       "summary": "Garbage collection docker repozitáře {untagged: smazat i neotagované manifesty}"
     },
     {
+      "id": "listGitRepos",
+      "group": "git",
+      "method": "GET",
+      "path": "/repos/:repo/git",
+      "auth": "read",
+      "summary": "Git repozitáře v repozitáři typu git",
+      "query": [
+        "q"
+      ]
+    },
+    {
+      "id": "createGitRepo",
+      "group": "git",
+      "method": "POST",
+      "path": "/repos/:repo/git",
+      "auth": "publish",
+      "summary": "Vytvořit git repozitář {name, description, defaultBranch} nebo importovat/zrcadlit (jen admin) {importUrl, mirror, interval, ttl, token, username}",
+      "body": "json"
+    },
+    {
+      "id": "githubImport",
+      "group": "git",
+      "method": "POST",
+      "path": "/repos/:repo/git/github-import",
+      "auth": "admin",
+      "summary": "Hromadný import / zrcadlení repozitářů z GitHubu {owner, token, kind: auto|user|org|mine, mirror, interval, filter, includeForks, includeArchived, limit, prefix}",
+      "body": "json"
+    },
+    {
+      "id": "getGitRepo",
+      "group": "git",
+      "method": "GET",
+      "path": "/repos/:repo/git/:name",
+      "auth": "read",
+      "summary": "Detail git repozitáře (větve, tagy, zrcadla, URL pro klonování)"
+    },
+    {
+      "id": "updateGitRepo",
+      "group": "git",
+      "method": "PUT",
+      "path": "/repos/:repo/git/:name",
+      "auth": "admin",
+      "summary": "Upravit git repozitář {description, defaultBranch, protectedBranches, mirror: {url, token, interval, ttl, enabled} | null}",
+      "body": "json"
+    },
+    {
+      "id": "deleteGitRepo",
+      "group": "git",
+      "method": "DELETE",
+      "path": "/repos/:repo/git/:name",
+      "auth": "admin",
+      "summary": "Smazat git repozitář"
+    },
+    {
+      "id": "gitCommits",
+      "group": "git",
+      "method": "GET",
+      "path": "/repos/:repo/git/:name/commits",
+      "auth": "read",
+      "summary": "Historie commitů",
+      "query": [
+        "ref",
+        "limit",
+        "path"
+      ]
+    },
+    {
+      "id": "gitTree",
+      "group": "git",
+      "method": "GET",
+      "path": "/repos/:repo/git/:name/tree",
+      "auth": "read",
+      "summary": "Obsah adresáře ve větvi/tagu/commitu",
+      "query": [
+        "ref",
+        "path"
+      ]
+    },
+    {
+      "id": "gitBlob",
+      "group": "git",
+      "method": "GET",
+      "path": "/repos/:repo/git/:name/blob",
+      "auth": "read",
+      "summary": "Obsah souboru ve větvi/tagu/commitu",
+      "query": [
+        "ref",
+        "path"
+      ],
+      "response": "binary"
+    },
+    {
+      "id": "gitArchive",
+      "group": "git",
+      "method": "GET",
+      "path": "/repos/:repo/git/:name/archive",
+      "auth": "read",
+      "summary": "Stáhnout archiv (tar.gz/zip) větve/tagu",
+      "query": [
+        "ref",
+        "format"
+      ],
+      "response": "binary"
+    },
+    {
+      "id": "gitSync",
+      "group": "git",
+      "method": "POST",
+      "path": "/repos/:repo/git/:name/sync",
+      "auth": "publish",
+      "summary": "Synchronizovat zrcadla hned {direction: pull|push|both}",
+      "body": "json"
+    },
+    {
+      "id": "addGitPushMirror",
+      "group": "git",
+      "method": "POST",
+      "path": "/repos/:repo/git/:name/push-mirrors",
+      "auth": "admin",
+      "summary": "Přidat push zrcadlo {url, token, username, mode: mirror|branches, createMissing, private}",
+      "body": "json"
+    },
+    {
+      "id": "deleteGitPushMirror",
+      "group": "git",
+      "method": "DELETE",
+      "path": "/repos/:repo/git/:name/push-mirrors/:id",
+      "auth": "admin",
+      "summary": "Odebrat push zrcadlo"
+    },
+    {
       "id": "listRoutes",
       "group": "routes",
       "method": "GET",
@@ -339,7 +506,7 @@
       "path": "/routes",
       "auth": "admin",
       "body": "json",
-      "summary": "Přidat pravidlo {name, when, matchOn, matchType, pattern, repo, key, target, cacheTtl, ...}"
+      "summary": "Přidat pravidlo {name, when: always|notfound|push, matchOn, matchType, pattern, repo, repoType, key, target, token, cacheTtl, replicateDeletes, gitMode, createMissing, ...}"
     },
     {
       "id": "getRoute",
@@ -374,6 +541,26 @@
       "auth": "admin",
       "body": "json",
       "summary": "Otestovat, které pravidlo odpovídá {repo, path, key, method}"
+    },
+    {
+      "id": "listReplications",
+      "group": "routes",
+      "method": "GET",
+      "path": "/replications",
+      "auth": "admin",
+      "summary": "Fronta a historie replikací (pravidla when=push)",
+      "query": [
+        "limit",
+        "status"
+      ]
+    },
+    {
+      "id": "retryReplication",
+      "group": "routes",
+      "method": "POST",
+      "path": "/replications/:id/retry",
+      "auth": "admin",
+      "summary": "Znovu spustit replikaci"
     },
     {
       "id": "cacheStats",
@@ -414,6 +601,72 @@
       "path": "/cache/entries/:key",
       "auth": "admin",
       "summary": "Smazat položku cache"
+    },
+    {
+      "id": "listWebhooks",
+      "group": "webhooks",
+      "method": "GET",
+      "path": "/webhooks",
+      "auth": "admin",
+      "summary": "Webhooky"
+    },
+    {
+      "id": "createWebhook",
+      "group": "webhooks",
+      "method": "POST",
+      "path": "/webhooks",
+      "auth": "admin",
+      "summary": "Vytvořit webhook {name, url, events: [*|npm.*|git.push|...], repos, secret, format: json|slack|discord, headers, enabled}",
+      "body": "json"
+    },
+    {
+      "id": "updateWebhook",
+      "group": "webhooks",
+      "method": "PUT",
+      "path": "/webhooks/:id",
+      "auth": "admin",
+      "summary": "Upravit webhook",
+      "body": "json"
+    },
+    {
+      "id": "deleteWebhook",
+      "group": "webhooks",
+      "method": "DELETE",
+      "path": "/webhooks/:id",
+      "auth": "admin",
+      "summary": "Smazat webhook"
+    },
+    {
+      "id": "testWebhook",
+      "group": "webhooks",
+      "method": "POST",
+      "path": "/webhooks/:id/test",
+      "auth": "admin",
+      "summary": "Odeslat testovací událost (ping)"
+    },
+    {
+      "id": "listWebhookDeliveries",
+      "group": "webhooks",
+      "method": "GET",
+      "path": "/webhooks/deliveries",
+      "auth": "admin",
+      "summary": "Historie doručení webhooků",
+      "query": [
+        "id",
+        "limit"
+      ]
+    },
+    {
+      "id": "listEvents",
+      "group": "webhooks",
+      "method": "GET",
+      "path": "/events",
+      "auth": "admin",
+      "summary": "Poslední události a seznam typů událostí",
+      "query": [
+        "limit",
+        "type"
+      ]
     },
     {
       "id": "listUsers",
@@ -489,7 +742,7 @@
       "path": "/settings",
       "auth": "admin",
       "body": "json",
-      "summary": "Změnit nastavení {defaultRepo, anonymousRead, allowRegistration, cacheTtl, tarballTtl, title, plugins}"
+      "summary": "Změnit nastavení {defaultRepo, dockerRepo, gitRepo, anonymousRead, allowRegistration, cacheTtl, tarballTtl, title, plugins}"
     }
   ]
 }

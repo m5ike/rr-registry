@@ -29,6 +29,11 @@ rr route add name=corp when=always matchType=prefix pattern=/@corp/ target=https
 rr route test /@corp/utils
 rr cache purge --expired
 rr npmrc >> ~/.npmrc
+rr git list git                      # git repozitáře
+rr git github git moje-org --token ghp_xxx
+rr git push-mirror add git tym/app https://github.com/firma/app.git --token ghp_xxx --create
+rr repo policy npm enabled=true maxVersions=10
+rr webhook add name=ci url=https://ci.example.com/hook events=npm.publish,git.push secret=s
 rr help
 ```
 

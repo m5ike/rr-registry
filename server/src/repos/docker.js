@@ -22,6 +22,7 @@ const crypto = require('crypto');
 const { pipeline } = require('stream/promises');
 const { HttpError, NotFoundLocal, send, sendJson } = require('../util/http');
 const { mkdirp, writeAtomic, readJsonFile, rmrf } = require('../util/store');
+const { checkQuota, assertMutable, invalidate } = require('../policies');
 
 const NAME_RE = /^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:\/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*$/;
 const TAG_RE = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/;
@@ -194,6 +195,33 @@ class DockerRepo {
   }
 
   /**
+   * Retention policy (repo.cleanup): per image keep the newest `maxVersions` tags and drop tags older
+   * than `maxAgeDays` ("latest" is always kept), then garbage-collect unreferenced data.
+   */
+  cleanup(policy = {}, { dryRun = false } = {}) {
+    const actions = [];
+    const max = Number(policy.maxVersions) || 0;
+    const age = Number(policy.maxAgeDays) || 0;
+    for (const name of this.names()) {
+      const tags = this.tagDetails(name).filter((t) => t.tag !== 'latest').sort((a, b) => String(b.created).localeCompare(String(a.created)));
+      tags.forEach((t, i) => {
+        const old = age && t.created && Date.now() - Date.parse(t.created) > age * 86400000;
+        if ((max && i >= max) || old) actions.push({ action: 'delete-tag', target: `${name}:${t.tag}`, reason: old ? `older than ${age} days` : `more than ${max} tags` });
+      });
+    }
+    let freedBytes = 0;
+    if (!dryRun) {
+      for (const a of actions) {
+        const [name, tag] = a.target.split(':');
+        try { this.deleteTag(name, tag); } catch { /* already gone */ }
+      }
+      freedBytes = this.gc({ untagged: true }).bytes;
+      invalidate(this);
+    }
+    return { actions, freedBytes };
+  }
+
+  /**
    * Garbage collection: optionally drop untagged manifests, then every blob that no manifest
    * references, and uploads older than a day. Returns what was removed.
    */
@@ -273,13 +301,16 @@ class DockerRepo {
   /** Handle /v2/... (path without the "/v2" prefix). */
   async handleV2(req, res, p, search) {
     res.setHeader('docker-distribution-api-version', 'registry/2.0');
+    const method = req.method;
     const read = () => this.app.auth.require(req, 'read', this.conf);
     const push = () => {
       const id = this.app.auth.require(req, 'publish', this.conf);
       if (this.conf.allowPublish === false) throw new RegistryError(403, 'DENIED', 'pushing to this repository is disabled');
+      if (method !== 'DELETE') {
+        try { checkQuota(this, Number(req.headers['content-length']) || 0); } catch (e) { throw new RegistryError(e.status, 'DENIED', e.message); }
+      }
       return id;
     };
-    const method = req.method;
     if (p === '/' || p === '') {
       // docker login probes this with credentials; anonymous pulls are allowed when the repo is public
       const id = this.app.auth.authenticate(req);
@@ -414,6 +445,7 @@ class DockerRepo {
         const headers = { 'content-type': r.meta.mediaType, 'docker-content-digest': r.digest, etag: `"${r.digest}"` };
         if (method === 'HEAD') return send(res, 200, null, { ...headers, 'content-length': body.length });
         this.app.stats.downloads++;
+        this.app.statsStore.hit(this.conf.name, `${name}:${ref}`);
         return send(res, 200, body, headers);
       }
       if (method === 'PUT') {
@@ -445,18 +477,25 @@ class DockerRepo {
         if (missing.length) throw new RegistryError(400, 'MANIFEST_BLOB_UNKNOWN', `unknown blob(s) ${missing.join(', ')}`, { missing });
         const digest = `sha256:${crypto.createHash('sha256').update(body).digest('hex')}`;
         if (DIGEST_RE.test(ref) && ref !== digest) throw new RegistryError(400, 'DIGEST_INVALID', `manifest digest is ${digest}`);
+        if (this.conf.immutable && !DIGEST_RE.test(ref)) {
+          const cur = this.resolve(name, ref);
+          if (cur && cur.digest !== digest) throw new RegistryError(403, 'DENIED', `repository ${this.conf.name} is immutable: tag ${name}:${ref} cannot be overwritten`);
+        }
         const bfile = this.blobFile(digest);
         if (!fs.existsSync(bfile)) writeAtomic(bfile, body);
         const dir = this.imageDir(name);
         writeAtomic(path.join(dir, 'manifests', `${digest.slice(7)}.json`), JSON.stringify({ mediaType, size: body.length, created: new Date().toISOString() }));
         if (!DIGEST_RE.test(ref)) writeAtomic(path.join(dir, 'tags', ref), digest);
         this.app.audit(id, 'docker-push', `${this.conf.name}/${name}:${ref}`);
+        invalidate(this);
+        this.app.events.emit('docker.push', { repo: this.conf.name, name, ref, digest, mediaType }, id);
         res.setHeader('location', loc(`manifests/${digest}`));
         res.setHeader('docker-content-digest', digest);
         return send(res, 201, null);
       }
       if (method === 'DELETE') {
         const id = push();
+        try { assertMutable(this.conf, 'deleting images'); } catch (e) { throw new RegistryError(403, 'DENIED', e.message); }
         if (DIGEST_RE.test(ref)) this.deleteManifest(name, ref);
         else {
           try {
@@ -466,6 +505,7 @@ class DockerRepo {
           }
         }
         this.app.audit(id, 'docker-delete', `${this.conf.name}/${name}:${ref}`);
+        this.app.events.emit('docker.delete', { repo: this.conf.name, name, ref }, id);
         return send(res, 202, null);
       }
       throw new RegistryError(405, 'UNSUPPORTED', 'method not allowed');

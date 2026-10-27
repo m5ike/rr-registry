@@ -6,6 +6,7 @@ const { HttpError } = require('./util/http');
 const ROLES = ['admin', 'publisher', 'reader'];
 const LEVELS = { read: 1, publish: 2, admin: 3 };
 const ROLE_LEVEL = { reader: 1, publisher: 2, admin: 3 };
+const ACL_LEVEL = { none: 0, read: 1, publish: 2 };
 
 function sha256(s) {
   return crypto.createHash('sha256').update(s).digest('hex');
@@ -194,7 +195,15 @@ class Auth {
       const s = this.app.stores.settings.get();
       return need === 1 && s.anonymousRead !== false && (!repo || repo.public !== false);
     }
-    const have = identity.readonly ? 1 : ROLE_LEVEL[identity.role] || 0;
+    let have = identity.readonly ? 1 : ROLE_LEVEL[identity.role] || 0;
+    // per-repository access list overrides the global role (admins are never restricted)
+    if (repo && repo.acl && identity.role !== 'admin' && Object.prototype.hasOwnProperty.call(repo.acl, identity.name)) {
+      const lvl = ACL_LEVEL[repo.acl[identity.name]] ?? 0;
+      have = identity.readonly ? Math.min(1, lvl) : lvl;
+    } else if (repo && repo.public === false && repo.acl && Object.keys(repo.acl).length && identity.role !== 'admin') {
+      // private repository with an access list: users not on the list get nothing
+      have = 0;
+    }
     return have >= need;
   }
 

@@ -114,9 +114,17 @@ screen_repos() {
       +new)
         local name type desc
         name=$(input "Název repozitáře (a-z, 0-9, ._-):") || continue
-        type=$(radio "Typ repozitáře" npm "npm / yarn / pnpm / bun balíčky" ON generic "Obecné soubory" OFF) || continue
+        type=$(radio "Typ repozitáře" npm "npm / yarn / pnpm / bun balíčky" ON generic "Obecné soubory" OFF docker "Docker / OCI image" OFF git "Git repozitáře" OFF group "Skupina (virtuální)" OFF) || continue
         desc=$(input "Popis:") || continue
-        api rr_api_create_repo "$(rr_json_obj "name==$name" "type=$type" "description==$desc")" >/dev/null && msg "Repozitář $name vytvořen.\nnpm registry: ${RR_SERVER%/}/r/$name/" ;;
+        local extra=""
+        if [ "$type" = group ]; then
+          local mem dep
+          mem=$(input "Členové skupiny (npm nebo generic repozitáře, čárkou):" "npm") || continue
+          dep=$(input "Publikovat přes skupinu do (deployTo, prázdné = jen čtení):") || continue
+          extra=",\"members\":$(rr_json_str "$mem"),\"deployTo\":$(rr_json_str "$dep")"
+        fi
+        local body; body=$(rr_json_obj "name==$name" "type=$type" "description==$desc"); body="${body%\}}$extra}"
+        api rr_api_create_repo "$body" >/dev/null && msg "Repozitář $name vytvořen.\nURL: ${RR_SERVER%/}/r/$name/" ;;
       *) screen_repo "$c" ;;
     esac
   done
@@ -136,6 +144,11 @@ screen_repo() {
       public "Přepnout veřejné čtení" \
       publish "Přepnout povolení publikace" \
       npmrc "Ukázat nastavení npm" \
+      git "Git repozitáře (typ git)" \
+      advanced "Pokročilé: kvóta, neměnnost, přístup, skupina" \
+      policy "Pravidla čištění (retence)" \
+      cleanup "Spustit čištění" \
+      stats "Statistiky stahování" \
       delete "Smazat repozitář" \
       back "Zpět") || return
     case "$c" in
@@ -145,11 +158,211 @@ screen_repo() {
       desc) local d; d=$(input "Popis:" "$(printf '%s' "$info" | jq -r .description)") && api rr_api_update_repo "$repo" "$(rr_json_obj "description==$d")" >/dev/null ;;
       public) api rr_api_update_repo "$repo" "$(printf '%s' "$info" | jq -c '{public: (.public|not)}')" >/dev/null ;;
       publish) api rr_api_update_repo "$repo" "$(printf '%s' "$info" | jq -c '{allowPublish: (.allowPublish|not)}')" >/dev/null ;;
+      git) if [ "$type" = git ]; then screen_git "$repo"; else msg "Repozitář $repo není typu git."; fi ;;
+      advanced) screen_repo_advanced "$repo" "$info" ;;
+      policy) screen_repo_policy "$repo" "$info" ;;
+      cleanup)
+        text "$(api rr_api_run_cleanup "$repo" '{"dryRun":true}' | jq -r '"Náhled čištění (nic se nesmazalo):", (.actions[] | "  \(.action) \(.target)  \(.reason // "")"), "celkem: \(.actions|length)"')"
+        yesno "Provést čištění repozitáře $repo?" && msg "$(api rr_api_run_cleanup "$repo" '{"dryRun":false}' | jq -r '"Hotovo: \(.actions|length) akcí, uvolněno \(.freedBytes) B"')" ;;
+      stats) text "$(api rr_api_get_repo_stats "$repo" | jq -r '"Stažení celkem: \(.total)\nPoslední: \(.last // "-")\n\nNejstahovanější:", (.top[] | "  \(.downloads)\t\(.item)"), "\nPosledních 30 dní:", (.days[] | select(.downloads > 0) | "  \(.day)  \(.downloads)")')" ;;
       npmrc) msg "Do ~/.npmrc nebo .npmrc projektu:\n\nregistry=${RR_SERVER%/}/r/$repo/\n${RR_SERVER#http*:}/r/$repo/:_authToken=<token>\n\nnebo: npm install <balíček> --registry ${RR_SERVER%/}/r/$repo/" 16 90 ;;
       delete)
         yesno "Opravdu smazat repozitář $repo?" || continue
         local q=""; yesno "Smazat i všechny soubory na disku?" && q="purge=1"
         api rr_api_delete_repo "$repo" "$q" >/dev/null && { msg "Smazáno."; return; } ;;
+      *) return ;;
+    esac
+  done
+}
+
+screen_repo_advanced() {
+  local repo="$1" info="$2" c v
+  c=$(UI_TITLE="Pokročilé – $repo" menu "$(printf '%s' "$info" | jq -r '"Kvóta: \(.quotaMb // 0) MB\(if .quota then " (využito \(.quota.usedBytes) B)" else "" end)   Neměnný: \(.immutable // false)\nACL: \(.acl // {} | to_entries | map("\(.key)=\(.value)") | join(", "))\(if .members then "\nČlenové: \(.members|join(",")) → deploy \(.deployTo // "-")" else "" end)"')" \
+    quota "Kvóta úložiště (MB, 0 = bez limitu)" \
+    immutable "Přepnout neměnnost (zákaz mazání/přepisu)" \
+    acl "Přístupová práva uživatelů" \
+    members "Členové skupiny (typ group)" \
+    deploy "Cíl publikace skupiny (deployTo)" \
+    autocreate "Git: vytvářet repozitář při prvním push" \
+    back "Zpět") || return
+  case "$c" in
+    quota) v=$(input "Kvóta v MB:" "$(printf '%s' "$info" | jq -r '.quotaMb // 0')") && api rr_api_update_repo "$repo" "$(rr_json_obj "quotaMb=$v")" >/dev/null ;;
+    immutable) api rr_api_update_repo "$repo" "$(printf '%s' "$info" | jq -c '{immutable: ((.immutable // false)|not)}')" >/dev/null ;;
+    acl) v=$(input "ACL ve tvaru uživatel:úroveň,… (none|read|publish; prázdné = zrušit):" "$(printf '%s' "$info" | jq -r '.acl // {} | to_entries | map("\(.key):\(.value)") | join(",")')") && api rr_api_update_repo "$repo" "$(rr_json_obj "acl==$v")" >/dev/null ;;
+    members) v=$(input "Členové (názvy repozitářů oddělené čárkou):" "$(printf '%s' "$info" | jq -r '(.members // []) | join(",")')") && api rr_api_update_repo "$repo" "$(rr_json_obj "members==$v")" >/dev/null ;;
+    deploy) v=$(input "deployTo (člen, kam se publikuje; prázdné = jen čtení):" "$(printf '%s' "$info" | jq -r '.deployTo // ""')") && api rr_api_update_repo "$repo" "$(rr_json_obj "deployTo==$v")" >/dev/null ;;
+    autocreate) api rr_api_update_repo "$repo" "$(printf '%s' "$info" | jq -c '{autoCreate: ((.autoCreate // false)|not)}')" >/dev/null ;;
+  esac
+}
+
+screen_repo_policy() {
+  local repo="$1" info="$2" en mv ma pre pat ih
+  en=false; yesno "Zapnout automatické čištění repozitáře $repo?" && en=true
+  mv=$(input "Ponechat nejnovějších N verzí / tagů / souborů v adresáři (0 = bez limitu):" "$(printf '%s' "$info" | jq -r '.cleanup.maxVersions // 0')") || return
+  ma=$(input "Mazat starší než N dní (0 = bez limitu):" "$(printf '%s' "$info" | jq -r '.cleanup.maxAgeDays // 0')") || return
+  pre=false; yesno "Čistit jen pre-release verze (npm)?" && pre=true
+  pat=$(input "Glob omezení cest (generic, prázdné = vše):" "$(printf '%s' "$info" | jq -r '.cleanup.pattern // ""')") || return
+  ih=$(input "Interval spouštění (hodiny):" "$(printf '%s' "$info" | jq -r '.cleanup.intervalHours // 24')") || return
+  api rr_api_update_repo "$repo" "{\"cleanup\":$(rr_json_obj "enabled=$en" "maxVersions=${mv:-0}" "maxAgeDays=${ma:-0}" "prereleaseOnly=$pre" "pattern==$pat" "intervalHours=${ih:-24}")}" >/dev/null && msg "Pravidla uložena."
+}
+
+# ----------------------------------------------------------------- git
+pick_git_repo() {
+  local json
+  json=$(api rr_api_list_repos) || return 1
+  read_items < <(jsonmenu "$json" '.[] | select(.type=="git") | .name, "\(.gitRepos // 0) repozitářů  \(.description)"')
+  [ ${#ITEMS[@]} -gt 0 ] || { msg "Žádný repozitář typu git."; return 1; }
+  UI_TITLE="Git" menu "Vyberte git repozitář" "${ITEMS[@]}"
+}
+
+screen_git() {
+  local repo="$1"
+  while true; do
+    local json c
+    json=$(api rr_api_list_git_repos "$repo") || return
+    read_items < <(jsonmenu "$json" '.[] | .name, "\(if .mirror then "⇣ zrcadlo [\(.mirror.status)] " else "" end)\(if .pushMirrors > 0 then "⇡\(.pushMirrors) " else "" end)\(.description)"')
+    c=$(UI_TITLE="Git – $repo" menu "Git repozitáře (git clone ${RR_SERVER%/}/r/$repo/<název>.git)" \
+      "+new" "Nový prázdný repozitář" "+import" "Import / zrcadlo z URL" "+github" "Hromadný import z GitHubu" "${ITEMS[@]}" "back" "Zpět") || return
+    case "$c" in
+      back) return ;;
+      +new)
+        local n d; n=$(input "Název (může obsahovat /, např. tym/projekt):") || continue; d=$(input "Popis:") || continue
+        api rr_api_create_git_repo "$repo" "$(rr_json_obj "name==$n" "description==$d")" >/dev/null && msg "Vytvořeno.\n\ngit clone ${RR_SERVER%/}/r/$repo/$n.git" 12 90 ;;
+      +import)
+        local n u t mi=true iv
+        u=$(input "URL zdrojového repozitáře (https://github.com/owner/repo.git):") || continue
+        n=$(input "Název v registru:" "$(printf '%s' "$u" | sed -E 's#^https?://[^/]+/##; s#\.git$##')") || continue
+        t=$(secret "Token (prázdné pro veřejné repozitáře):") || continue
+        yesno "Udržovat jako zrcadlo (pravidelná synchronizace)?" || mi=false
+        iv=$(input "Interval synchronizace (s):" "3600") || continue
+        msg "$(api rr_api_create_git_repo "$repo" "$(rr_json_obj "name==$n" "importUrl==$u" "token==$t" "mirror=$mi" "interval=${iv:-3600}")" | jq -r '"Importováno: \(.name)\nvětví: \(.branches|length), tagů: \(.tags|length)"')" ;;
+      +github)
+        local o t f l mi=true r
+        o=$(input "GitHub uživatel nebo organizace (prázdné = moje repozitáře, vyžaduje token):") || continue
+        t=$(secret "GitHub token (nutný pro privátní repozitáře):") || continue
+        f=$(input "Filtr názvů (glob, prázdné = vše):") || continue
+        l=$(input "Maximální počet:" "50") || continue
+        yesno "Udržovat jako zrcadla?" || mi=false
+        r=$(api rr_api_github_import "$repo" "$(rr_json_obj "owner==$o" "token==$t" "filter==$f" "limit=${l:-50}" "mirror=$mi" "kind=$([ -z "$o" ] && echo mine || echo auto)")") || continue
+        text "$(printf '%s' "$r" | jq -r '"Nalezeno: \(.found), vybráno: \(.selected)\n", (.results[] | "\(.status)\t\(.name)\(if .error then "  " + .error else "" end)")')" ;;
+      *) screen_git_repo "$repo" "$c" ;;
+    esac
+  done
+}
+
+screen_git_repo() {
+  local repo="$1" name="$2"
+  while true; do
+    local info c
+    info=$(api rr_api_get_git_repo "$repo" "$name") || return
+    c=$(UI_TITLE="$name" menu "$(printf '%s' "$info" | jq -r '"\(.cloneUrl)\nVětev: \(.defaultBranch // "-")  větví: \(.branches|length)  tagů: \(.tags|length)\(if .mirror then "\nZrcadlo: \(.mirror.url) [\(.mirror.status)]" else "" end)"')" \
+      info "Větve, tagy, zrcadla" log "Historie commitů" browse "Procházet soubory" \
+      sync "Synchronizovat zrcadla" mirror "Nastavit / zrušit pull zrcadlo" pushmirror "Přidat push zrcadlo" \
+      rmpush "Odebrat push zrcadlo" protect "Chráněné větve" branch "Výchozí větev" desc "Popis" \
+      archive "Stáhnout archiv" delete "Smazat repozitář" back "Zpět") || return
+    case "$c" in
+      info) text "$(printf '%s' "$info" | jq -r '"Clone: \(.cloneUrl)\nPopis: \(.description)\nVelikost: \(.size) B\nChráněné větve: \(.protectedBranches|join(", "))",
+         (if .mirror then "\nPull zrcadlo: \(.mirror.url)\n  stav \(.mirror.status), poslední sync \(.mirror.lastSync // "-"), interval \(.mirror.interval) s\n  chyba: \(.mirror.lastError // "-")\n  webhook: \(.mirror.webhookUrl)\n  secret: \(.mirror.webhookSecret)" else empty end),
+         (if (.pushMirrors|length) > 0 then "\nPush zrcadla:", (.pushMirrors[] | "  \(.id) \(.url) [\(.status)] \(.lastPush // "")  \(.lastError // "")") else empty end),
+         "\nVětve:", (.branches[] | "  \(.name)  \(.commit[0:8])  \(.date)  \(.subject)"), "\nTagy:", (.tags[] | "  \(.name)  \(.commit[0:8])")')" ;;
+      log) text "$(api rr_api_git_commits "$repo" "$name" "limit=100" | jq -r '.[] | "\(.short)  \(.date[0:16])  \(.author)\n         \(.subject)"')" ;;
+      browse) screen_git_tree "$repo" "$name" "" "" ;;
+      sync) local d; d=$(radio "Směr" both "pull i push" ON pull "stáhnout ze zdroje" OFF push "odeslat do push zrcadel" OFF) && text "$(api rr_api_git_sync "$repo" "$name" "$(rr_json_obj "direction=$d")" | jq .)" ;;
+      mirror)
+        local u t iv
+        u=$(input "URL zdroje (prázdné = zrušit zrcadlo):" "$(printf '%s' "$info" | jq -r '.mirror.url // ""')") || continue
+        if [ -z "$u" ]; then api rr_api_update_git_repo "$repo" "$name" '{"mirror":null}' >/dev/null; continue; fi
+        t=$(secret "Token (prázdné = beze změny/veřejné):") || continue
+        iv=$(input "Interval synchronizace (s):" "$(printf '%s' "$info" | jq -r '.mirror.interval // 3600')") || continue
+        local body; body=$(rr_json_obj "url==$u" "interval=${iv:-3600}" "enabled=true")
+        [ -n "$t" ] && body=$(printf '%s' "$body" | jq -c --arg t "$t" '. + {token: $t}')
+        api rr_api_update_git_repo "$repo" "$name" "{\"mirror\":$body}" >/dev/null && msg "Zrcadlo nastaveno. Spusťte synchronizaci." ;;
+      pushmirror)
+        local u t cr=false
+        u=$(input "Cílová URL (např. https://github.com/firma/projekt.git):") || continue
+        t=$(secret "Token pro cíl:") || continue
+        yesno "Vytvořit repozitář na GitHubu, pokud neexistuje?" && cr=true
+        api rr_api_add_git_push_mirror "$repo" "$name" "$(rr_json_obj "url==$u" "token==$t" "createMissing=$cr")" >/dev/null && msg "Push zrcadlo přidáno – odešle se po každém push nebo synchronizaci." ;;
+      rmpush)
+        read_items < <(printf '%s' "$info" | jq -r '.pushMirrors[] | .id, .url')
+        [ ${#ITEMS[@]} -gt 0 ] || { msg "Žádná push zrcadla."; continue; }
+        local id; id=$(menu "Odebrat push zrcadlo" "${ITEMS[@]}") && api rr_api_delete_git_push_mirror "$repo" "$name" "$id" >/dev/null ;;
+      protect) local v; v=$(input "Chráněné větve (čárkou; zakazuje force-push a smazání):" "$(printf '%s' "$info" | jq -r '.protectedBranches|join(",")')") && api rr_api_update_git_repo "$repo" "$name" "$(rr_json_obj "protectedBranches==$v")" >/dev/null ;;
+      branch) local v; v=$(input "Výchozí větev:" "$(printf '%s' "$info" | jq -r '.defaultBranch // "main"')") && api rr_api_update_git_repo "$repo" "$name" "$(rr_json_obj "defaultBranch==$v")" >/dev/null ;;
+      desc) local v; v=$(input "Popis:" "$(printf '%s' "$info" | jq -r '.description')") && api rr_api_update_git_repo "$repo" "$name" "$(rr_json_obj "description==$v")" >/dev/null ;;
+      archive)
+        local ref o; ref=$(input "Větev / tag:" "$(printf '%s' "$info" | jq -r '.defaultBranch // "HEAD"')") || continue
+        o=$(input "Uložit do:" "$PWD/${name##*/}-$ref.tar.gz") || continue
+        RR_OUT="$o" rr_api_git_archive "$repo" "$name" "$(rr_query "ref=$ref")" 2>"$TMP/err" && msg "Uloženo: $o" || msg "Chyba: $(cat "$TMP/err")" ;;
+      delete) yesno "Smazat git repozitář $name?" && api rr_api_delete_git_repo "$repo" "$name" >/dev/null && return ;;
+      *) return ;;
+    esac
+  done
+}
+
+screen_git_tree() {
+  local repo="$1" name="$2" ref="$3" path="$4"
+  while true; do
+    local json c
+    json=$(api rr_api_git_tree "$repo" "$name" "$(rr_query "ref=$ref" "path=$path")") || return
+    read_items < <(jsonmenu "$json" '.entries[] | (.name + (if .type=="dir" then "/" else "" end)), (if .type=="dir" then "adresář" else "\(.size) B" end)')
+    c=$(UI_TITLE="$name:${ref:-HEAD}" menu "/$path" ".." "O úroveň výš" "${ITEMS[@]}" "back" "Zpět") || return
+    case "$c" in
+      back) return ;;
+      ..) [ -z "$path" ] && return; path="$(dirname "$path")"; [ "$path" = "." ] && path="" ;;
+      */) path="${path:+$path/}${c%/}" ;;
+      *) text "$(rr_api_git_blob "$repo" "$name" "$(rr_query "ref=$ref" "path=${path:+$path/}$c")" | head -c 200000)" ;;
+    esac
+  done
+}
+
+# ----------------------------------------------------------------- webhooks, replication, tasks
+screen_webhooks() {
+  while true; do
+    local json c
+    json=$(api rr_api_list_webhooks) || return
+    read_items < <(jsonmenu "$json" '.[] | .id, "\(if .enabled then "●" else "○" end) \(.name)  [\(.events|join(","))] → \(.url)  \(if .lastDelivery then "(\(.lastDelivery.status))" else "" end)"')
+    c=$(UI_TITLE="Webhooky" menu "Notifikace o událostech registru (HMAC podpis X-RR-Signature-256)" "+new" "Nový webhook" "+log" "Historie doručení" "+events" "Poslední události" "${ITEMS[@]}" "back" "Zpět") || return
+    case "$c" in
+      back) return ;;
+      +new)
+        local n u e r f sec
+        n=$(input "Název:") || continue
+        u=$(input "URL (http/https):") || continue
+        e=$(input "Události (čárkou: *, npm.*, git.push, file.upload, docker.push, repo.*, replication.failed …):" "*") || continue
+        r=$(input "Repozitáře (čárkou, * = všechny):" "*") || continue
+        f=$(radio "Formát" json "JSON (pro aplikace)" ON slack "Slack / Mattermost" OFF discord "Discord" OFF) || continue
+        sec=$(input "Tajný klíč pro podpis (volitelné):") || continue
+        api rr_api_create_webhook "$(rr_json_obj "name==$n" "url==$u" "events==$e" "repos==$r" "format=$f" "secret==$sec")" >/dev/null && msg "Webhook vytvořen." ;;
+      +log) text "$(api rr_api_list_webhook_deliveries "limit=100" | jq -r '.[] | "\(.time[0:19]) \(.status) \(if .ok then "OK " else "ERR" end) \(.hook) \(.event) #\(.attempt) \(.error // "")"')" ;;
+      +events) text "$(api rr_api_list_events "limit=100" | jq -r '.events[] | "\(.time[0:19]) \(.type) \(.repo // "-") \(.user) \(.data.name // .data.path // "")"')" ;;
+      *)
+        local a; a=$(menu "Webhook $c" test "Odeslat test (ping)" toggle "Zapnout / vypnout" log "Doručení" delete "Smazat") || continue
+        case "$a" in
+          test) text "$(api rr_api_test_webhook "$c" | jq .)" ;;
+          toggle) api rr_api_update_webhook "$c" "$(printf '%s' "$json" | jq -c --arg id "$c" '.[] | select(.id==$id) | {enabled: (.enabled|not)}')" >/dev/null ;;
+          log) text "$(api rr_api_list_webhook_deliveries "$(rr_query "id=$c")" | jq -r '.[] | "\(.time[0:19]) \(.status) \(.event) #\(.attempt) \(.error // .response // "")"')" ;;
+          delete) yesno "Smazat webhook?" && api rr_api_delete_webhook "$c" >/dev/null ;;
+        esac ;;
+    esac
+  done
+}
+
+screen_jobs() {
+  while true; do
+    local c
+    c=$(UI_TITLE="Replikace a úlohy" menu "Replikace (pravidla when=push) a naplánované úlohy" \
+      repl "Fronta replikací" retry "Znovu spustit replikaci" tasks "Naplánované úlohy" run "Spustit úlohu" back "Zpět") || return
+    case "$c" in
+      repl) text "$(api rr_api_list_replications "limit=200" | jq -r '.[] | "\(.created[0:19]) \(.status)\t\(.ruleName) \(.event) \(.repo)/\(.item) try \(.attempts) \(.error // "")"')" ;;
+      retry)
+        read_items < <(api rr_api_list_replications "status=error" | jq -r '.[] | .id, "\(.ruleName) \(.repo)/\(.item) \(.error // "")"')
+        [ ${#ITEMS[@]} -gt 0 ] || { msg "Žádné neúspěšné replikace."; continue; }
+        local id; id=$(menu "Neúspěšné replikace" "${ITEMS[@]}") && api rr_api_retry_replication "$id" >/dev/null && msg "Zařazeno znovu." ;;
+      tasks) text "$(api rr_api_list_tasks | jq -r '.[] | "\(.id)  (\(.name))\n  interval \(.intervalSec)s, poslední \(.lastRun // "-"), další \(.nextRun // "-")\n  \(.lastError // (.lastResult|tostring))\n"')" ;;
+      run)
+        read_items < <(api rr_api_list_tasks | jq -r '.[] | .id, .name')
+        local id; id=$(menu "Spustit úlohu" "${ITEMS[@]}") && text "$(api rr_api_run_task "$id" | jq .)" ;;
       *) return ;;
     esac
   done
@@ -254,6 +467,29 @@ screen_file() {
     download) local o; o=$(input "Uložit do:" "$PWD/$(basename "$file")") && RR_OUT="$o" rr_api_read_file "$repo" "$(rr_query "path=$file")" && msg "Uloženo: $o" ;;
     delete) yesno "Smazat $file?" && api rr_api_delete_file "$repo" "$(rr_query "path=$file")" >/dev/null ;;
   esac
+}
+
+# ----------------------------------------------------------------- docker
+screen_images() {
+  local json repo
+  json=$(api rr_api_list_repos) || return
+  read_items < <(jsonmenu "$json" '.[] | select(.type=="docker") | .name, "\(.images // 0) image  \(.description)"')
+  [ ${#ITEMS[@]} -gt 0 ] || { msg "Žádný docker repozitář."; return; }
+  repo=$(menu "Docker repozitář" "${ITEMS[@]}") || return
+  while true; do
+    local c
+    json=$(api rr_api_list_images "$repo") || return
+    read_items < <(jsonmenu "$json" '.[] | .name, "\(.tags) tagů  \(.size) B"')
+    c=$(UI_TITLE="Docker – $repo" menu "docker pull ${RR_SERVER#http*://}/<image>:<tag>" "+gc" "Garbage collection" "${ITEMS[@]}" "back" "Zpět") || return
+    case "$c" in
+      back) return ;;
+      +gc) local u=false; yesno "Smazat i manifesty bez tagu?" && u=true; text "$(api rr_api_docker_gc "$repo" "{\"untagged\":$u}" | jq .)" ;;
+      *)
+        read_items < <(api rr_api_list_image_tags "$repo" "$c" | jq -r '.[] | .tag, "\(.digest[0:19])  \(.size) B  \(.created // "")"')
+        local t; t=$(menu "Tagy $c (vyberte ke smazání)" "${ITEMS[@]}") || continue
+        yesno "Smazat $c:$t?" && api rr_api_delete_image_tag "$repo" "$c" "$t" >/dev/null ;;
+    esac
+  done
 }
 
 # ----------------------------------------------------------------- search
@@ -431,6 +667,10 @@ main_menu() {
       7 "Cache" \
       8 "Uživatelé" \
       9 "Tokeny" \
+      G "Git repozitáře" \
+      D "Docker image" \
+      W "Webhooky a události" \
+      J "Replikace a naplánované úlohy" \
       S "Nastavení serveru" \
       L "Logy" \
       K "Klientské balíčky" \
@@ -447,6 +687,10 @@ main_menu() {
       7) screen_cache ;;
       8) screen_users ;;
       9) screen_tokens ;;
+      G) local r; r=$(pick_git_repo) && screen_git "$r" ;;
+      D) screen_images ;;
+      W) screen_webhooks ;;
+      J) screen_jobs ;;
       S) screen_settings ;;
       L) screen_logs ;;
       K) screen_clients ;;

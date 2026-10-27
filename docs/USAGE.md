@@ -33,6 +33,19 @@ curl http://HOST:4873/r/files/app/            # výpis adresáře (JSON, v prohl
 curl -X DELETE -H "Authorization: Bearer $TOKEN" http://HOST:4873/r/files/app/app-1.0.zip
 ```
 
+## Git repozitáře
+
+```bash
+git remote add rr http://HOST:4873/git/tym/projekt.git
+git push rr main                      # repozitář se vytvoří (role publisher+)
+git clone http://HOST:4873/git/tym/projekt.git
+rr git github git moje-org --token ghp_xxx           # zrcadla všech repozitářů organizace
+rr git push-mirror add git tym/projekt https://github.com/firma/projekt.git --token ghp_xxx --create
+```
+
+Podrobnosti (zrcadla, webhook z GitHubu, chráněné větve, směrování) jsou v [GIT.md](GIT.md).
+Kvóty, neměnné repozitáře, ACL, skupiny, čištění, statistiky, webhooky a úlohy popisuje [ADVANCED.md](ADVANCED.md).
+
 ## Docker image
 
 Docker repozitář (výchozí `docker`, viz nastavení `dockerRepo`) obsluhuje Docker Registry HTTP API v2 na `/v2/`:

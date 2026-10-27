@@ -1,8 +1,9 @@
 # @m5ike/rr_bash-gui — `rr-gui`
 
 Textové „grafické" menu (whiptail / dialog) pro kompletní správu **RR Registry**:
-připojení a přihlášení, repozitáře, balíčky, prohlížení souborů, směrovací pravidla,
-cache, uživatelé, tokeny, nastavení, logy. Všechna volání jdou přes generovanou
+připojení a přihlášení, repozitáře (včetně kvót, ACL, neměnnosti, skupin, čištění a statistik), balíčky,
+prohlížení souborů, git repozitáře (import z GitHubu, zrcadla, procházení kódu), docker image,
+směrovací pravidla, webhooky, replikace a úlohy, cache, uživatelé, tokeny, nastavení, logy. Všechna volání jdou přes generovanou
 knihovnu `lib/rr-api.sh`. Maintainer: **m5ike**.
 
 Závislosti: `bash ≥ 4`, `curl`, `jq`, `whiptail` nebo `dialog`

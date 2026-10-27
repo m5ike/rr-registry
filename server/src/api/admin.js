@@ -3,6 +3,10 @@
 // spec must have a handler here, so the generated client libraries always match the server.
 const { HttpError, send, sendJson, readBody, readJson, baseUrl, mimeType } = require('../util/http');
 const files = require('../repos/files');
+const { checkQuota, assertMutable, invalidate } = require('../policies');
+const { githubList } = require('../util/git');
+const { publicRule, globToRegex } = require('../plugins/router');
+const { EVENT_TYPES } = require('../events');
 
 function compile(spec) {
   return spec.operations
@@ -25,6 +29,11 @@ function createHandlers(app) {
   const dockerRepo = (name) => {
     const h = app.repoHandler(name);
     if (h.conf.type !== 'docker') throw new HttpError(400, `repository ${name} is not a docker repository`);
+    return h;
+  };
+  const gitRepo = (name) => {
+    const h = app.repoHandler(name);
+    if (h.conf.type !== 'git') throw new HttpError(400, `repository ${name} is not a git repository`);
     return h;
   };
   const npmRepo = (name) => {
@@ -52,6 +61,13 @@ function createHandlers(app) {
       };
     },
     listPlugins: () => app.plugins.info(),
+    listTasks: () => app.scheduler.list(),
+    runTask: async ({ params, identity }) => {
+      const t = await app.scheduler.run(params.id);
+      if (!t) throw new HttpError(404, `task ${params.id} not found`);
+      app.audit(identity, 'run-task', params.id);
+      return t;
+    },
 
     // ---- auth ----
     login: ({ body }) => {
@@ -85,6 +101,8 @@ function createHandlers(app) {
       app.audit(identity, 'delete-repo', params.repo);
       return { ok: true };
     },
+    runCleanup: ({ params, body, identity }) => app.runCleanup(params.repo, { dryRun: bool(body.dryRun), policy: body.policy }, identity),
+    getRepoStats: ({ params, query }) => app.statsStore.get(params.repo, { top: query.top }),
 
     // ---- packages ----
     listPackages: ({ params, query }) => app.repoHandler(params.repo).listPackages(query.q || ''),
@@ -92,16 +110,92 @@ function createHandlers(app) {
     listImages: ({ params }) => dockerRepo(params.repo).images(),
     listImageTags: ({ params }) => dockerRepo(params.repo).tagDetails(params.image),
     deleteImageTag: ({ params, identity }) => {
-      dockerRepo(params.repo).deleteTag(params.image, params.tag);
+      const h = dockerRepo(params.repo);
+      assertMutable(h.conf, 'deleting images');
+      h.deleteTag(params.image, params.tag);
+      app.events.emit('docker.delete', { repo: params.repo, name: params.image, ref: params.tag }, identity);
       app.audit(identity, 'docker-delete', `${params.repo}/${params.image}:${params.tag}`);
     },
     dockerGc: ({ params, body, identity }) => {
       const r = dockerRepo(params.repo).gc({ untagged: bool(body && body.untagged) });
+      invalidate(dockerRepo(params.repo));
       app.audit(identity, 'docker-gc', `${params.repo}: ${r.blobs} blobs, ${r.manifests} manifests`);
       return r;
     },
+    // ---- git ----
+    listGitRepos: ({ params, query }) => gitRepo(params.repo).list(query.q || ''),
+    createGitRepo: ({ params, body, identity }) => {
+      const h = gitRepo(params.repo);
+      if (h.conf.allowPublish === false) throw new HttpError(403, `repository ${params.repo} does not allow publishing`);
+      // imports reach out to arbitrary URLs (incl. file://) - admin only
+      if (body.importUrl && identity.role !== 'admin') throw new HttpError(403, 'only admin can import or mirror repositories');
+      return h.create(body.name, body, identity);
+    },
+    githubImport: async ({ params, body, identity }) => {
+      const h = gitRepo(params.repo);
+      const owner = String(body.owner || '').trim();
+      const token = body.token || '';
+      const kind = body.kind || (owner ? 'auto' : 'mine');
+      if (!owner && kind !== 'mine') throw new HttpError(400, 'owner (GitHub user or organization) is required');
+      if (kind === 'mine' && !token) throw new HttpError(400, 'token is required to list your own repositories');
+      const opts = { token, apiUrl: body.apiUrl };
+      const limit = Math.min(Number(body.limit) || 100, 1000);
+      let list;
+      if (kind === 'mine') list = await githubList('/user/repos?affiliation=owner,organization_member', opts, limit);
+      else if (kind === 'org') list = await githubList(`/orgs/${encodeURIComponent(owner)}/repos?type=all`, opts, limit);
+      else if (kind === 'user') list = await githubList(`/users/${encodeURIComponent(owner)}/repos?type=owner`, opts, limit);
+      else {
+        try { list = await githubList(`/orgs/${encodeURIComponent(owner)}/repos?type=all`, opts, limit); } catch (e) {
+          if (e.status !== 404) throw e;
+          list = await githubList(`/users/${encodeURIComponent(owner)}/repos?type=owner`, opts, limit);
+        }
+      }
+      const re = body.filter ? globToRegex(body.filter) : null;
+      const selected = list.filter((r) => (body.includeForks || !r.fork) && (body.includeArchived || !r.archived) && (!re || re.test(r.name)));
+      const results = [];
+      for (const r of selected) {
+        const name = body.prefix === '' ? r.name : `${body.prefix || r.owner.login}/${r.name}`;
+        if (h.exists(name)) { results.push({ name, status: 'exists' }); continue; }
+        try {
+          await h.create(name, {
+            importUrl: r.clone_url, mirror: body.mirror !== false, interval: body.interval ?? 3600, ttl: body.ttl ?? 300,
+            token: token || undefined, username: 'x-access-token', description: r.description || '',
+          }, identity);
+          results.push({ name, status: 'created', private: r.private, from: r.html_url });
+        } catch (e) {
+          results.push({ name, status: 'error', error: e.message });
+        }
+      }
+      app.audit(identity, 'github-import', `${params.repo} <- ${owner || 'me'}: ${results.filter((x) => x.status === 'created').length} created`);
+      return { owner: owner || null, found: list.length, selected: selected.length, results };
+    },
+    getGitRepo: ({ req, params }) => gitRepo(params.repo).info(params.name, baseUrl(req, app.config)),
+    updateGitRepo: ({ params, body, identity }) => gitRepo(params.repo).update(params.name, body, identity),
+    deleteGitRepo: ({ params, identity }) => {
+      const h = gitRepo(params.repo);
+      assertMutable(h.conf, 'deleting git repositories');
+      return h.remove(params.name, identity);
+    },
+    gitCommits: ({ params, query }) => gitRepo(params.repo).commits(params.name, query),
+    gitTree: ({ params, query }) => gitRepo(params.repo).tree(params.name, query),
+    gitBlob: async ({ res, params, query }) => {
+      const data = await gitRepo(params.repo).blob(params.name, query);
+      send(res, 200, data, { 'content-type': mimeType(String(query.path || '')), 'content-disposition': `inline; filename="${String(query.path || 'file').split('/').pop()}"` });
+    },
+    gitArchive: async ({ res, params, query }) => {
+      const a = await gitRepo(params.repo).archive(params.name, query);
+      app.statsStore.hit(params.repo, params.name);
+      send(res, 200, a.data, { 'content-type': a.file.endsWith('.zip') ? 'application/zip' : 'application/gzip', 'content-disposition': `attachment; filename="${a.file}"` });
+    },
+    gitSync: ({ params, body, identity }) => gitRepo(params.repo).sync(params.name, ['pull', 'push', 'both'].includes(body.direction) ? body.direction : 'both', identity),
+    addGitPushMirror: ({ params, body, identity }) => gitRepo(params.repo).addPushMirror(params.name, body, identity),
+    deleteGitPushMirror: ({ params, identity }) => gitRepo(params.repo).removePushMirror(params.name, params.id, identity),
+
     uploadPackage: async ({ req, params, query, identity }) => {
-      const repo = npmRepo(params.repo);
+      const conf = app.repoConfig(params.repo);
+      if (conf.type === 'group' && !conf.deployTo) throw new HttpError(400, `group ${params.repo} has no deployTo member`);
+      const repo = npmRepo(conf.type === 'group' ? conf.deployTo : params.repo);
+      if (!app.auth.can(identity, 'publish', repo.conf)) throw new HttpError(403, `forbidden: publish permission required on ${repo.conf.name}`);
       const tgz = await readBody(req, app.config.maxBody);
       if (!tgz.length) throw new HttpError(400, 'empty body, send the .tgz file');
       return repo.publishTarball(tgz, identity, { tag: query.tag || 'latest' });
@@ -142,30 +236,41 @@ function createHandlers(app) {
       send(res, 200, f.data, { 'content-type': mimeType(query.path), 'content-disposition': `inline; filename="${String(query.path).split('/').pop()}"` });
     },
     writeFile: async ({ req, params, query, identity }) => {
+      const h = app.repoHandler(params.repo);
+      let exists = false;
+      try { exists = files.stat(h.dir, query.path).type === 'file'; } catch { /* new file */ }
+      if (exists) assertMutable(h.conf, 'overwriting files');
       const data = await readBody(req, app.config.maxBody);
-      const r = files.write(app.repoHandler(params.repo).dir, query.path, data);
+      checkQuota(h, data.length);
+      const r = files.write(h.dir, query.path, data);
+      invalidate(h);
       app.audit(identity, 'write-file', `${params.repo}${r.path}`);
+      app.events.emit('file.upload', { repo: params.repo, path: r.path, size: r.size, overwritten: exists }, identity);
       return r;
     },
     deleteFile: ({ params, query, identity }) => {
-      files.remove(app.repoHandler(params.repo).dir, query.path);
+      const h = app.repoHandler(params.repo);
+      assertMutable(h.conf, 'deleting files');
+      files.remove(h.dir, query.path);
+      invalidate(h);
       app.audit(identity, 'delete-file', `${params.repo}${query.path}`);
+      app.events.emit('file.delete', { repo: params.repo, path: query.path }, identity);
       return { ok: true };
     },
     mkdir: ({ params, query }) => files.mkdir(app.repoHandler(params.repo).dir, query.path),
 
     // ---- routes ----
-    listRoutes: () => app.router().rules(),
+    listRoutes: () => app.router().rules().map(publicRule),
     createRoute: ({ body, identity }) => {
       const r = app.router().create(body);
       app.audit(identity, 'create-route', r.name);
-      return r;
+      return publicRule(r);
     },
-    getRoute: ({ params }) => app.router().get(params.id),
+    getRoute: ({ params }) => publicRule(app.router().get(params.id)),
     updateRoute: ({ params, body, identity }) => {
       const r = app.router().update(params.id, body);
       app.audit(identity, 'update-route', r.name);
-      return r;
+      return publicRule(r);
     },
     deleteRoute: ({ params, identity }) => {
       app.router().remove(params.id);
@@ -173,6 +278,35 @@ function createHandlers(app) {
       return { ok: true };
     },
     testRoute: ({ body }) => app.router().explain(body),
+    listReplications: ({ query }) => app.router().listJobs({ limit: Number(query.limit) || 100, status: query.status }),
+    retryReplication: ({ params, identity }) => {
+      app.audit(identity, 'retry-replication', params.id);
+      return app.router().retryJob(params.id);
+    },
+
+    // ---- webhooks & events ----
+    listWebhooks: () => app.events.list(),
+    createWebhook: ({ body, identity }) => {
+      const h = app.events.create(body);
+      app.audit(identity, 'create-webhook', h.name);
+      return h;
+    },
+    updateWebhook: ({ params, body, identity }) => {
+      const h = app.events.update(params.id, body);
+      app.audit(identity, 'update-webhook', h.name);
+      return h;
+    },
+    deleteWebhook: ({ params, identity }) => {
+      app.events.remove(params.id);
+      app.audit(identity, 'delete-webhook', params.id);
+      return { ok: true };
+    },
+    testWebhook: ({ params }) => app.events.test(params.id),
+    listWebhookDeliveries: ({ query }) => app.events.listDeliveries({ id: query.id, limit: Number(query.limit) || 100 }),
+    listEvents: ({ query }) => ({
+      types: EVENT_TYPES,
+      events: app.events.recent.filter((e) => !query.type || e.type === query.type).slice(-(Number(query.limit) || 100)).reverse(),
+    }),
 
     // ---- cache ----
     cacheStats: () => app.cache.stats(),

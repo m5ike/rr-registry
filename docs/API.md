@@ -1,4 +1,4 @@
-# RR Registry – Management API (v1.1.0)
+# RR Registry – Management API (v1.2.0)
 
 > Vygenerováno z `api/spec.json` nástrojem `tools/gen-clients.js` – needitovat ručně.
 
@@ -24,6 +24,8 @@ Každá operace je dostupná ve všech klientech:
 | `rebuildClients` | `POST /api/v1/clients/rebuild` | admin | Znovu vygenerovat klientské knihovny a publikovat je do registru | `rr_api_rebuild_clients` |
 | `getLogs` | `GET /api/v1/logs` | admin | Poslední požadavky a audit log<br>query: `limit`, `type` | `rr_api_get_logs` |
 | `listPlugins` | `GET /api/v1/plugins` | admin | Dostupné a zapnuté pluginy | `rr_api_list_plugins` |
+| `listTasks` | `GET /api/v1/tasks` | admin | Naplánované úlohy (zrcadla, čištění, cache) | `rr_api_list_tasks` |
+| `runTask` | `POST /api/v1/tasks/:id/run` | admin | Spustit úlohu hned | `rr_api_run_task` |
 
 ## auth
 
@@ -38,10 +40,12 @@ Každá operace je dostupná ve všech klientech:
 | Operace | Metoda a cesta | Auth | Popis | Bash |
 |---|---|---|---|---|
 | `listRepos` | `GET /api/v1/repos` | read | Seznam repozitářů | `rr_api_list_repos` |
-| `createRepo` | `POST /api/v1/repos` | admin | Vytvořit repozitář {name, type: npm|generic|docker, description, public, allowPublish}<br>body: json | `rr_api_create_repo` |
+| `createRepo` | `POST /api/v1/repos` | admin | Vytvořit repozitář {name, type: npm|generic|docker|git|group, description, public, allowPublish, quotaMb, immutable, acl, cleanup, members, deployTo, autoCreate}<br>body: json | `rr_api_create_repo` |
 | `getRepo` | `GET /api/v1/repos/:repo` | read | Detail repozitáře | `rr_api_get_repo` |
-| `updateRepo` | `PUT /api/v1/repos/:repo` | admin | Upravit repozitář {description, public, allowPublish}<br>body: json | `rr_api_update_repo` |
+| `updateRepo` | `PUT /api/v1/repos/:repo` | admin | Upravit repozitář {description, public, allowPublish, quotaMb, immutable, acl: {uživatel: none|read|publish}, cleanup: {enabled, maxVersions, maxAgeDays, prereleaseOnly, pattern, intervalHours}, members, deployTo, autoCreate}<br>body: json | `rr_api_update_repo` |
 | `deleteRepo` | `DELETE /api/v1/repos/:repo` | admin | Smazat repozitář (purge=1 smaže i soubory)<br>query: `purge` | `rr_api_delete_repo` |
+| `runCleanup` | `POST /api/v1/repos/:repo/cleanup` | admin | Spustit čištění dle pravidel retence {dryRun, policy?: {maxVersions, maxAgeDays, prereleaseOnly, pattern}}<br>body: json | `rr_api_run_cleanup` |
+| `getRepoStats` | `GET /api/v1/repos/:repo/stats` | read | Statistiky stahování repozitáře (celkem, nejstahovanější, posledních 30 dní)<br>query: `top` | `rr_api_get_repo_stats` |
 
 ## packages
 
@@ -78,16 +82,36 @@ Každá operace je dostupná ve všech klientech:
 | `deleteImageTag` | `DELETE /api/v1/repos/:repo/images/:image/tags/:tag` | publish | Smazat tag image (data uvolní garbage collection) | `rr_api_delete_image_tag` |
 | `dockerGc` | `POST /api/v1/repos/:repo/gc` | admin | Garbage collection docker repozitáře {untagged: smazat i neotagované manifesty}<br>body: json | `rr_api_docker_gc` |
 
+## git
+
+| Operace | Metoda a cesta | Auth | Popis | Bash |
+|---|---|---|---|---|
+| `listGitRepos` | `GET /api/v1/repos/:repo/git` | read | Git repozitáře v repozitáři typu git<br>query: `q` | `rr_api_list_git_repos` |
+| `createGitRepo` | `POST /api/v1/repos/:repo/git` | publish | Vytvořit git repozitář {name, description, defaultBranch} nebo importovat/zrcadlit (jen admin) {importUrl, mirror, interval, ttl, token, username}<br>body: json | `rr_api_create_git_repo` |
+| `githubImport` | `POST /api/v1/repos/:repo/git/github-import` | admin | Hromadný import / zrcadlení repozitářů z GitHubu {owner, token, kind: auto|user|org|mine, mirror, interval, filter, includeForks, includeArchived, limit, prefix}<br>body: json | `rr_api_github_import` |
+| `getGitRepo` | `GET /api/v1/repos/:repo/git/:name` | read | Detail git repozitáře (větve, tagy, zrcadla, URL pro klonování) | `rr_api_get_git_repo` |
+| `updateGitRepo` | `PUT /api/v1/repos/:repo/git/:name` | admin | Upravit git repozitář {description, defaultBranch, protectedBranches, mirror: {url, token, interval, ttl, enabled} | null}<br>body: json | `rr_api_update_git_repo` |
+| `deleteGitRepo` | `DELETE /api/v1/repos/:repo/git/:name` | admin | Smazat git repozitář | `rr_api_delete_git_repo` |
+| `gitCommits` | `GET /api/v1/repos/:repo/git/:name/commits` | read | Historie commitů<br>query: `ref`, `limit`, `path` | `rr_api_git_commits` |
+| `gitTree` | `GET /api/v1/repos/:repo/git/:name/tree` | read | Obsah adresáře ve větvi/tagu/commitu<br>query: `ref`, `path` | `rr_api_git_tree` |
+| `gitBlob` | `GET /api/v1/repos/:repo/git/:name/blob` | read | Obsah souboru ve větvi/tagu/commitu<br>query: `ref`, `path` | `rr_api_git_blob` |
+| `gitArchive` | `GET /api/v1/repos/:repo/git/:name/archive` | read | Stáhnout archiv (tar.gz/zip) větve/tagu<br>query: `ref`, `format` | `rr_api_git_archive` |
+| `gitSync` | `POST /api/v1/repos/:repo/git/:name/sync` | publish | Synchronizovat zrcadla hned {direction: pull|push|both}<br>body: json | `rr_api_git_sync` |
+| `addGitPushMirror` | `POST /api/v1/repos/:repo/git/:name/push-mirrors` | admin | Přidat push zrcadlo {url, token, username, mode: mirror|branches, createMissing, private}<br>body: json | `rr_api_add_git_push_mirror` |
+| `deleteGitPushMirror` | `DELETE /api/v1/repos/:repo/git/:name/push-mirrors/:id` | admin | Odebrat push zrcadlo | `rr_api_delete_git_push_mirror` |
+
 ## routes
 
 | Operace | Metoda a cesta | Auth | Popis | Bash |
 |---|---|---|---|---|
 | `listRoutes` | `GET /api/v1/routes` | admin | Pravidla směrování (routing plugin) | `rr_api_list_routes` |
-| `createRoute` | `POST /api/v1/routes` | admin | Přidat pravidlo {name, when, matchOn, matchType, pattern, repo, key, target, cacheTtl, ...}<br>body: json | `rr_api_create_route` |
+| `createRoute` | `POST /api/v1/routes` | admin | Přidat pravidlo {name, when: always|notfound|push, matchOn, matchType, pattern, repo, repoType, key, target, token, cacheTtl, replicateDeletes, gitMode, createMissing, ...}<br>body: json | `rr_api_create_route` |
 | `getRoute` | `GET /api/v1/routes/:id` | admin | Detail pravidla | `rr_api_get_route` |
 | `updateRoute` | `PUT /api/v1/routes/:id` | admin | Upravit pravidlo<br>body: json | `rr_api_update_route` |
 | `deleteRoute` | `DELETE /api/v1/routes/:id` | admin | Smazat pravidlo | `rr_api_delete_route` |
 | `testRoute` | `POST /api/v1/routes/test` | admin | Otestovat, které pravidlo odpovídá {repo, path, key, method}<br>body: json | `rr_api_test_route` |
+| `listReplications` | `GET /api/v1/replications` | admin | Fronta a historie replikací (pravidla when=push)<br>query: `limit`, `status` | `rr_api_list_replications` |
+| `retryReplication` | `POST /api/v1/replications/:id/retry` | admin | Znovu spustit replikaci | `rr_api_retry_replication` |
 
 ## cache
 
@@ -97,6 +121,18 @@ Každá operace je dostupná ve všech klientech:
 | `listCache` | `GET /api/v1/cache/entries` | admin | Položky v cache<br>query: `q`, `limit` | `rr_api_list_cache` |
 | `purgeCache` | `DELETE /api/v1/cache` | admin | Vyčistit cache (vše / expired=1 / q=filtr)<br>query: `expired`, `q` | `rr_api_purge_cache` |
 | `deleteCacheEntry` | `DELETE /api/v1/cache/entries/:key` | admin | Smazat položku cache | `rr_api_delete_cache_entry` |
+
+## webhooks
+
+| Operace | Metoda a cesta | Auth | Popis | Bash |
+|---|---|---|---|---|
+| `listWebhooks` | `GET /api/v1/webhooks` | admin | Webhooky | `rr_api_list_webhooks` |
+| `createWebhook` | `POST /api/v1/webhooks` | admin | Vytvořit webhook {name, url, events: [*|npm.*|git.push|...], repos, secret, format: json|slack|discord, headers, enabled}<br>body: json | `rr_api_create_webhook` |
+| `updateWebhook` | `PUT /api/v1/webhooks/:id` | admin | Upravit webhook<br>body: json | `rr_api_update_webhook` |
+| `deleteWebhook` | `DELETE /api/v1/webhooks/:id` | admin | Smazat webhook | `rr_api_delete_webhook` |
+| `testWebhook` | `POST /api/v1/webhooks/:id/test` | admin | Odeslat testovací událost (ping) | `rr_api_test_webhook` |
+| `listWebhookDeliveries` | `GET /api/v1/webhooks/deliveries` | admin | Historie doručení webhooků<br>query: `id`, `limit` | `rr_api_list_webhook_deliveries` |
+| `listEvents` | `GET /api/v1/events` | admin | Poslední události a seznam typů událostí<br>query: `limit`, `type` | `rr_api_list_events` |
 
 ## users
 
@@ -120,7 +156,7 @@ Každá operace je dostupná ve všech klientech:
 | Operace | Metoda a cesta | Auth | Popis | Bash |
 |---|---|---|---|---|
 | `getSettings` | `GET /api/v1/settings` | admin | Nastavení serveru | `rr_api_get_settings` |
-| `updateSettings` | `PUT /api/v1/settings` | admin | Změnit nastavení {defaultRepo, anonymousRead, allowRegistration, cacheTtl, tarballTtl, title, plugins}<br>body: json | `rr_api_update_settings` |
+| `updateSettings` | `PUT /api/v1/settings` | admin | Změnit nastavení {defaultRepo, dockerRepo, gitRepo, anonymousRead, allowRegistration, cacheTtl, tarballTtl, title, plugins}<br>body: json | `rr_api_update_settings` |
 
 ## Příklady
 

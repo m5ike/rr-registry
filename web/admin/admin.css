@@ -91,3 +91,7 @@ td.actions { white-space: nowrap; text-align: right; }
   #view { padding: 16px; }
   .topbar { padding: 12px 16px; }
 }
+
+.bars { display: flex; align-items: flex-end; gap: 2px; height: 36px; margin-top: 8px; }
+.bars .bar { flex: 1; height: 100%; display: flex; align-items: flex-end; background: var(--code); border-radius: 2px; }
+.bars .bar span { display: block; width: 100%; background: var(--primary); border-radius: 2px; min-height: 1px; }

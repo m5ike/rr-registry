@@ -11,6 +11,7 @@ const { HttpError, NotFoundLocal, send, sendJson, readJson } = require('../util/
 const { mkdirp, writeAtomic, readJsonFile, rmrf } = require('../util/store');
 const semver = require('../util/semver');
 const tar = require('../util/tar');
+const { checkQuota, assertMutable, invalidate } = require('../policies');
 
 const NAME_RE = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9._~-][a-z0-9._~-]*$/i;
 
@@ -107,6 +108,7 @@ class NpmRepo {
     const version = manifest.version;
     if (!semver.valid(version)) throw new HttpError(400, `invalid version: ${version}`);
     if (doc.versions[version]) throw new HttpError(403, `cannot publish over the previously published version ${name}@${version}`);
+    checkQuota(this, tgz.length);
     const file = `${baseName(name)}-${version}.tgz`;
     const shasum = crypto.createHash('sha1').update(tgz).digest('hex');
     const integrity = `sha512-${crypto.createHash('sha512').update(tgz).digest('base64')}`;
@@ -138,7 +140,7 @@ class NpmRepo {
     const name = body.name || body._id;
     if (!validName(name)) throw new HttpError(400, `invalid package name: ${name}`);
     const atts = body._attachments || {};
-    if (!Object.keys(atts).length) return this.updateMetadata(name, body);
+    if (!Object.keys(atts).length) return this.updateMetadata(name, body, identity);
     const doc = this.read(name) || this.newDoc(name);
     const versions = Object.keys(body.versions || {});
     if (!versions.length) throw new HttpError(400, 'no versions in publish request');
@@ -161,6 +163,8 @@ class NpmRepo {
     this.finalize(doc, identity);
     this.write(name, doc);
     this.app.audit(identity, 'publish', `${this.conf.name}/${name}@${versions.join(',')}`);
+    invalidate(this);
+    this.app.events.emit('npm.publish', { repo: this.conf.name, name, versions, distTags: doc['dist-tags'] }, identity);
     return { ok: true, id: name, rev: doc._rev };
   }
 
@@ -177,12 +181,16 @@ class NpmRepo {
     this.finalize(doc, identity, maintainers);
     this.write(pj.name, doc);
     this.app.audit(identity, 'publish', `${this.conf.name}/${pj.name}@${pj.version}`);
+    invalidate(this);
+    this.app.events.emit('npm.publish', { repo: this.conf.name, name: pj.name, versions: [pj.version], distTags: doc['dist-tags'] }, identity);
     return { ok: true, name: pj.name, version: pj.version, dist: m.dist };
   }
 
   /** Metadata update (npm deprecate / npm unpublish <pkg>@<ver> / dist-tag changes). */
-  updateMetadata(name, body) {
+  updateMetadata(name, body, identity) {
     const doc = this.getPackage(name);
+    const removed = body.versions ? Object.keys(doc.versions).filter((v) => !body.versions[v]) : [];
+    if (removed.length) assertMutable(this.conf, 'unpublishing versions');
     if (body.versions) {
       for (const v of Object.keys(doc.versions)) {
         if (!body.versions[v]) this.removeVersionFiles(doc, v);
@@ -192,11 +200,13 @@ class NpmRepo {
     }
     if (body['dist-tags']) doc['dist-tags'] = { ...body['dist-tags'] };
     if (!Object.keys(doc.versions).length) {
-      this.unpublish(name);
+      this.unpublish(name, identity);
       return { ok: true, id: name };
     }
     this.finalize(doc);
     this.write(name, doc);
+    if (removed.length) this.app.events.emit('npm.unpublish', { repo: this.conf.name, name, versions: removed }, identity);
+    else this.app.events.emit('npm.deprecate', { repo: this.conf.name, name }, identity);
     return { ok: true, id: name, rev: doc._rev };
   }
 
@@ -212,21 +222,27 @@ class NpmRepo {
   deleteVersion(name, version, identity) {
     const doc = this.getPackage(name);
     if (!doc.versions[version]) throw new HttpError(404, `version ${version} not found`);
+    assertMutable(this.conf, 'deleting versions');
     this.removeVersionFiles(doc, version);
     this.app.audit(identity, 'unpublish', `${this.conf.name}/${name}@${version}`);
     if (!Object.keys(doc.versions).length) return this.unpublish(name, identity);
     this.finalize(doc);
     this.write(name, doc);
+    invalidate(this);
+    this.app.events.emit('npm.unpublish', { repo: this.conf.name, name, versions: [version] }, identity);
     return { ok: true };
   }
 
   unpublish(name, identity) {
     const dir = this.pkgDir(name);
     if (!fs.existsSync(dir)) throw new HttpError(404, `package ${name} not found`);
+    assertMutable(this.conf, 'unpublishing packages');
     rmrf(dir);
     const parent = path.dirname(dir);
     if (parent !== this.dir && fs.existsSync(parent) && !fs.readdirSync(parent).length) fs.rmdirSync(parent);
     this.app.audit(identity, 'unpublish', `${this.conf.name}/${name}`);
+    invalidate(this);
+    this.app.events.emit('npm.unpublish', { repo: this.conf.name, name, versions: null }, identity);
     return { ok: true };
   }
 
@@ -236,6 +252,7 @@ class NpmRepo {
     if (!tag || semver.valid(tag)) throw new HttpError(400, 'invalid tag');
     doc['dist-tags'][tag] = version;
     this.write(name, doc);
+    this.app.events.emit('npm.tag', { repo: this.conf.name, name, tag, version }, null);
     return doc['dist-tags'];
   }
 
@@ -244,6 +261,7 @@ class NpmRepo {
     if (tag === 'latest') throw new HttpError(400, 'cannot delete the latest tag');
     delete doc['dist-tags'][tag];
     this.write(name, doc);
+    this.app.events.emit('npm.tag', { repo: this.conf.name, name, tag, version: null }, null);
     return doc['dist-tags'];
   }
 
@@ -256,7 +274,46 @@ class NpmRepo {
       else delete doc.versions[v].deprecated;
     }
     this.write(name, doc);
+    this.app.events.emit('npm.deprecate', { repo: this.conf.name, name, versions: list, message }, null);
     return { ok: true };
+  }
+
+  /**
+   * Retention policy (repo.cleanup): keep the newest `maxVersions` versions of every package and/or drop
+   * versions older than `maxAgeDays`. Versions referenced by a dist-tag are kept; `prereleaseOnly`
+   * limits the cleanup to pre-releases (1.0.0-beta.1).
+   */
+  cleanup(policy = {}, { dryRun = false } = {}) {
+    const actions = [];
+    const max = Number(policy.maxVersions) || 0;
+    const age = Number(policy.maxAgeDays) || 0;
+    for (const n of this.names()) {
+      const doc = this.read(n);
+      if (!doc) continue;
+      const tagged = new Set(Object.values(doc['dist-tags']));
+      let candidates = semver.sort(Object.keys(doc.versions)).reverse();
+      if (policy.prereleaseOnly) candidates = candidates.filter((v) => (semver.parse(v) || { pre: [] }).pre.length);
+      candidates.forEach((v, i) => {
+        if (tagged.has(v)) return;
+        const old = age && doc.time[v] && Date.now() - Date.parse(doc.time[v]) > age * 86400000;
+        if ((max && i >= max) || old) actions.push({ action: 'delete-version', target: `${n}@${v}`, size: doc.versions[v].dist.size || 0, reason: old ? `older than ${age} days` : `more than ${max} versions` });
+      });
+    }
+    let freedBytes = 0;
+    if (!dryRun) {
+      for (const a of actions) {
+        const i = a.target.lastIndexOf('@');
+        const name = a.target.slice(0, i);
+        const doc = this.read(name);
+        if (!doc) continue;
+        this.removeVersionFiles(doc, a.target.slice(i + 1));
+        freedBytes += a.size;
+        if (!Object.keys(doc.versions).length) rmrf(this.pkgDir(name));
+        else { this.finalize(doc); this.write(name, doc); }
+      }
+      invalidate(this);
+    }
+    return { actions, freedBytes };
   }
 
   tarball(name, file) {
@@ -366,7 +423,7 @@ class NpmRepo {
     // /<name>/-rev/<rev>
     if (rest[0] === '-rev') {
       const id = this.requirePublish(req);
-      if (method === 'PUT') return sendJson(res, 201, this.updateMetadata(name, await readJson(req, this.app.config.maxBody)));
+      if (method === 'PUT') return sendJson(res, 201, this.updateMetadata(name, await readJson(req, this.app.config.maxBody), id));
       if (method === 'DELETE') return sendJson(res, 200, this.unpublish(name, id));
       throw new HttpError(405, 'method not allowed');
     }
@@ -383,6 +440,7 @@ class NpmRepo {
       const data = this.tarball(name, file);
       if (!data) throw new NotFoundLocal(`tarball ${file} not found`);
       this.app.stats.downloads++;
+      if (method === 'GET') this.app.statsStore.hit(this.conf.name, name);
       return send(res, 200, data, { 'content-type': 'application/octet-stream', 'cache-control': 'public, max-age=31536000, immutable' });
     }
     // /<name>/<version|tag>
