@@ -1,0 +1,55 @@
+{
+  "$schema": "https://aitools.dev/spec/portal-app/1/schema.json",
+  "contract": 1,
+  "id": "npm-registry",
+  "name": "RR Registry",
+  "version": "1.3.0",
+  "description": "Private npm, Docker/OCI and git registry with caching proxy, generic repositories and admin UI.",
+  "category": "devtools",
+  "icon": "web/assets/logo.svg",
+  "compat": { "portal": ">=1.0.0 <2.0.0" },
+  "routing": {
+    "preferred": "host",
+    "pathPrefix": false,
+    "host": true,
+    "rootPaths": ["/v2/", "/-/", "/api/v1/", "/admin/", "/git/"]
+  },
+  "services": [
+    {
+      "id": "web",
+      "port": 4873,
+      "primary": true,
+      "websocket": false,
+      "health": { "path": "/-/ping", "expect": "2xx", "intervalSec": 10 },
+      "proxy": { "maxBodyMB": 4096, "timeoutMs": 0 }
+    }
+  ],
+  "env": {
+    "host": "RR_HOST",
+    "port": "RR_PORT",
+    "publicUrl": "RR_PUBLIC_URL",
+    "dataDir": "RR_DATA_DIR"
+  },
+  "auth": {
+    "mode": "app",
+    "require": "none"
+  },
+  "runtime": {
+    "static": {
+      "requires": ["node>=18", "git"],
+      "build": "node tools/build.js",
+      "start": "node server/bin/rr-server.js"
+    },
+    "docker": {
+      "build": { "context": ".", "dockerfile": "Dockerfile" },
+      "volumes": { "data": "/data" },
+      "env": { "RR_DATA_DIR": "/data" }
+    }
+  },
+  "nav": [
+    { "label": "Home", "path": "/" },
+    { "label": "Admin", "path": "/admin/" },
+    { "label": "API docs", "path": "/docs/" }
+  ],
+  "wellKnown": "/.well-known/portal-app.json"
+}
