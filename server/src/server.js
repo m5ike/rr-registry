@@ -387,6 +387,17 @@ class App {
     };
   }
 
+  portalManifest(res) {
+    let manifest;
+    try {
+      manifest = JSON.parse(fs.readFileSync(path.join(this.config.root, 'portal.app.json'), 'utf8'));
+    } catch {
+      return sendJson(res, 404, { error: 'portal manifest not shipped with this build' });
+    }
+    manifest.version = this.config.version;
+    return sendJson(res, 200, manifest);
+  }
+
   // ---------- HTTP ----------
   async handle(req, res) {
     const t0 = Date.now();
@@ -411,6 +422,8 @@ class App {
     });
     try {
       let p = url.pathname;
+      // AI Tools Portal discovery (contract 1): the manifest of this app, optional for standalone use.
+      if (p === '/.well-known/portal-app.json' && (req.method === 'GET' || req.method === 'HEAD')) return this.portalManifest(res);
       if (p === '/api/v1' || p.startsWith('/api/v1/')) return await this.api(req, res, url);
       if (p === '/v2' || p.startsWith('/v2/')) {
         try {
