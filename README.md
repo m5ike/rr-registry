@@ -132,3 +132,4 @@ RR Registry can be attached to the AI Tools Portal (gateway, TLS, health checks,
 single entry point) without losing standalone operation — see
 [docs/PORTAL.md](docs/PORTAL.md). Manifest: [`portal.app.json`](portal.app.json).
 
+# rr-registry
