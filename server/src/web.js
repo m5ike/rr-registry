@@ -28,18 +28,29 @@ function createWeb(app) {
     const s = app.stores.settings.get();
     const st = app.status(base);
     const clients = app.clientList(base);
+    const ICON = {
+      download: 'M12 3v12M7 10l5 5 5-5M4 20h16',
+      npm: 'M12 3l8 4.5v9L12 21l-8-4.5v-9zM4 7.5l8 4.5 8-4.5M12 12v9',
+      docker: 'M3 10h18v6a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4zM6 10V6h4v4M10 10V6h4v4M14 10V7h3v3',
+      git: 'M6 4v10M18 4a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5zM6 14a3 3 0 1 1 0 6 3 3 0 0 1 0-6zM18 9c0 4-4 5-9.5 6.5',
+      generic: 'M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z',
+      group: 'M12 3l9 5-9 5-9-5zM3 13l9 5 9-5',
+    };
+    const svg = (d, size = 18) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
     const rows = clients.map((p) => `
-      <div class="card client">
+      <article class="card client">
         <div class="client-head"><h3>${esc(p.name)}</h3><span class="badge">v${esc(p.version)}</span></div>
         <p>${esc(p.description)}</p>
-        <pre><code>${esc(p.npmInstall)}</code></pre>
-        <div class="row"><a class="btn" href="${esc(p.download)}">⬇ ${esc(p.file)}</a><span class="muted">${fmtSize(p.size)} · maintainer ${esc(p.maintainer)}</span></div>
-      </div>`).join('');
-    const repos = app.listRepos().map((r) => `<tr><td><code>${esc(r.name)}</code>${r.name === s.defaultRepo ? ' <span class="badge">výchozí</span>' : ''}</td><td>${esc(r.type)}</td><td><code>${esc(base)}${r.name === s.defaultRepo ? '/' : `/r/${esc(r.name)}/`}</code></td><td>${esc(r.description)}</td></tr>`).join('');
+        <code class="cmd-line">${esc(p.npmInstall)}</code>
+        <div class="row"><a class="btn ghost" href="${esc(p.download)}">${svg(ICON.download, 17)}${esc(p.file)}</a><span class="muted small">${fmtSize(p.size)} · ${esc((p.bin || []).join(', ') || 'knihovna')}</span></div>
+      </article>`).join('');
+    const repoUrl = (r) => (r.type === 'docker' ? `${base.replace(/^https?:\/\//, '')}/<image>` : r.type === 'git' ? `${base}${r.name === s.gitRepo ? '/git' : `/r/${r.name}`}/<název>.git` : `${base}${r.name === s.defaultRepo ? '/' : `/r/${r.name}/`}`);
+    const repos = app.listRepos().map((r) => `<tr><td><span class="repo-name"><span class="tile ${esc(r.type)}">${svg(ICON[r.type] || ICON.generic, 16)}</span><b>${esc(r.name)}</b>${r.name === s.defaultRepo ? ' <span class="badge">výchozí</span>' : ''}</span></td><td><span class="pill">${esc(r.type)}</span></td><td><code>${esc(repoUrl(r))}</code></td><td class="muted">${esc(r.description)}</td></tr>`).join('');
     const tpl = fs.readFileSync(path.join(c.webDir, 'home', 'index.html'), 'utf8');
     const vars = {
       TITLE: esc(s.title), VERSION: esc(c.version), BASE: esc(base), HOST: esc(base.replace(/^https?:/, '')), CLIENTS: rows, REPOS: repos,
       MOTD: s.motd ? `<div class="motd">${esc(s.motd)}</div>` : '', PACKAGES: st.packages, REPOCOUNT: st.repos, UPTIME: Math.round(st.uptime / 60),
+      GITREPOS: st.gitRepos || 0, DOCKERHOST: esc(base.replace(/^https?:\/\//, '')),
     };
     return tpl.replace(/\{\{(\w+)\}\}/g, (m, k) => (k in vars ? String(vars[k]) : m));
   }

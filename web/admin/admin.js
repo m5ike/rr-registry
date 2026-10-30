@@ -1,4 +1,5 @@
-/* RR Registry - web administration. All server calls go through the generated RRClient library. */
+/* RR Registry - web administration. All server calls go through the generated RRClient library,
+   UI building blocks (tables, windows, palette, charts, icons) come from ui.js (RRUI). */
 (function () {
   'use strict';
   const CFG = window.RR_CONFIG || {};
@@ -6,9 +7,11 @@
     get(k) { try { return localStorage.getItem(`rr.${k}`) || ''; } catch { return ''; } },
     set(k, v) { try { if (v) localStorage.setItem(`rr.${k}`, v); else localStorage.removeItem(`rr.${k}`); } catch { /* ignore */ } },
   };
+  const { icon, wm } = RRUI;
   let rr = null;
   let me = null;
   let refreshTimer = null;
+  let repoCache = [];
 
   // ------------------------------------------------------------------ helpers
   const $ = (s, el = document) => el.querySelector(s);
@@ -17,16 +20,40 @@
   const enc = encodeURIComponent;
   const fmtBytes = (n) => (n == null ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} kB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(2)} GB`);
   const fmtDate = (s) => (s ? new Date(s).toLocaleString() : '');
+  const fmtNum = (n) => Number(n || 0).toLocaleString('cs-CZ');
   const yes = (b) => (b ? '<span class="badge ok">ano</span>' : '<span class="badge off">ne</span>');
   const serverBase = () => (rr.baseUrl || location.origin);
   const registryUrl = (repo, def) => `${serverBase()}${def ? '' : `/r/${repo}`}/`;
+  const isAdmin = () => me && me.role === 'admin';
+  const TYPE_ICON = { npm: 'package', docker: 'image', git: 'git', generic: 'folder', group: 'layers', dir: 'folder', file: 'file' };
+  const tile = (type, ic) => `<span class="tile ${esc(type)}">${icon(ic || TYPE_ICON[type] || 'file', 16)}</span>`;
+  const cellMain = (type, title, sub, ic) => `<div class="cell-main">${tile(type, ic)}<div class="t"><b>${esc(title)}</b>${sub ? `<small>${esc(sub)}</small>` : ''}</div></div>`;
+  const iconBtn = (attr, ic, label, cls = '') => `<button type="button" class="btn small ghost ${cls}" ${attr} title="${esc(label)}" aria-label="${esc(label)}">${icon(ic, 16)}</button>`;
+
+  function ago(s) {
+    if (!s) return '–';
+    const d = (Date.now() - Date.parse(s)) / 1000;
+    if (d < 0) return `za ${Math.round(-d / 60)} min`;
+    if (d < 60) return 'právě teď';
+    if (d < 3600) return `před ${Math.round(d / 60)} min`;
+    if (d < 86400) return `před ${Math.round(d / 3600)} h`;
+    if (d < 86400 * 30) return `před ${Math.round(d / 86400)} d`;
+    return new Date(s).toLocaleDateString();
+  }
+  const when = (s) => (s ? `<span title="${esc(fmtDate(s))}">${esc(ago(s))}</span>` : '–');
+  const age = (s) => {
+    if (!s) return 'neznámé';
+    const d = (Date.now() - Date.parse(s)) / 86400000;
+    return d < 1 ? 'dnes' : d < 7 ? 'tento týden' : d < 31 ? 'tento měsíc' : d < 365 ? 'tento rok' : 'starší';
+  };
 
   function toast(msg, err) {
     const t = $('#toast');
-    t.textContent = msg;
+    t.innerHTML = `${icon(err ? 'alert' : 'check', 18)}<span></span>`;
+    t.querySelector('span').textContent = msg;
     t.className = `toast${err ? ' err' : ''}`;
     clearTimeout(t._t);
-    t._t = setTimeout(() => t.classList.add('hidden'), err ? 6000 : 2500);
+    t._t = setTimeout(() => t.classList.add('hidden'), err ? 6000 : 2600);
   }
 
   async function run(fn, okMsg) {
@@ -41,24 +68,35 @@
     }
   }
 
+  let modalKey = null;
   function modal(html, onMount) {
     const m = $('#modal');
     $('#modalBody').innerHTML = html;
+    const h = $('#modalBody > h2');
+    $('#modalTitle').textContent = h ? h.textContent : '';
+    if (h) h.remove();
     m.classList.remove('hidden');
-    const close = () => m.classList.add('hidden');
+    const close = () => {
+      m.classList.add('hidden');
+      if (modalKey) document.removeEventListener('keydown', modalKey);
+      modalKey = null;
+    };
+    if (modalKey) document.removeEventListener('keydown', modalKey);
+    modalKey = (e) => { if (e.key === 'Escape') { const c = $('#modal [data-close]'); if (c) c.click(); else close(); } };
+    document.addEventListener('keydown', modalKey);
     m.onclick = (e) => { if (e.target === m) close(); };
     $$('[data-close]', m).forEach((b) => { b.onclick = close; });
     if (onMount) onMount($('#modalBody'), close);
-    const first = $('input,select,textarea', m);
+    const first = $('#modalBody input:not([type=checkbox]):not([disabled]),#modalBody select,#modalBody textarea');
     if (first) first.focus();
     return close;
   }
 
   function confirmBox(text) {
     return new Promise((resolve) => {
-      modal(`<h2>Potvrzení</h2><p>${esc(text)}</p><div class="row"><span class="spacer"></span><button class="btn" data-close>Zrušit</button><button class="btn danger" id="cfOk">Potvrdit</button></div>`, (el, close) => {
+      modal(`<h2>Potvrzení</h2><p style="margin:0">${esc(text)}</p><div class="row"><span class="spacer"></span><button class="btn" data-close>Zrušit</button><button class="btn danger" id="cfOk">Potvrdit</button></div>`, (el, close) => {
         $('#cfOk', el).onclick = () => { close(); resolve(true); };
-        $$('[data-close]', el).forEach((b) => { b.onclick = () => { close(); resolve(false); }; });
+        $$('[data-close]', $('#modal')).forEach((b) => { b.onclick = () => { close(); resolve(false); }; });
       });
     });
   }
@@ -83,68 +121,305 @@
 
   const readFile = (file) => file.arrayBuffer().then((b) => new Uint8Array(b));
 
-  function setView(title, html) {
-    $('#title').textContent = title;
+  function setView(title, html, ic) {
+    $('#title').innerHTML = `${ic ? icon(ic, 22) : ''}<span></span>`;
+    $('#title span').textContent = title;
     $('#view').innerHTML = html;
     return $('#view');
   }
 
-  function repoSelect(repos, current, onlyNpm) {
-    return `<select id="repoSel">${repos.filter((r) => !onlyNpm || r.type === 'npm').map((r) => `<option value="${esc(r.name)}"${r.name === current ? ' selected' : ''}>${esc(r.name)} (${esc(r.type)})</option>`).join('')}</select>`;
+  function repoSelect(repos, current, onlyNpm, id = 'repoSel') {
+    return `<label class="dt-select">${icon('repo', 16)}<span class="sr">Repozitář</span><select id="${id}">${repos.filter((r) => !onlyNpm || r.type === 'npm' || r.type === 'group').map((r) => `<option value="${esc(r.name)}"${r.name === current ? ' selected' : ''}>${esc(r.name)} · ${esc(r.type)}</option>`).join('')}</select></label>`;
+  }
+
+  /** Mount an RRUI table into a container inside the view (by selector). */
+  const table = (host, opts) => RRUI.table(typeof host === 'string' ? $(host) : host, opts);
+
+  // ------------------------------------------------------------------ windows
+  async function pkgWindow(repo, name) {
+    wm.open({
+      id: `pkg:${repo}/${name}`, title: `${name} · ${repo}`, icon: 'package', width: 660, height: 500,
+      render: async (body, w) => {
+        const d = await rr.getPackage(repo, name);
+        const reg = registryUrl(repo, (repoCache.find((r) => r.name === repo) || {}).default);
+        const versions = Object.keys(d.versions).reverse();
+        let tab = w.tab || 'versions';
+        const draw = () => {
+          body.innerHTML = `<div class="tabs">${[['versions', `Verze (${versions.length})`], ['install', 'Instalace'], ['readme', 'README'], ['json', 'package.json']].map(([k, l]) => `<button type="button" data-t="${k}" class="${tab === k ? 'active' : ''}">${l}</button>`).join('')}
+            <span class="spacer"></span><a class="btn small ghost" href="#/pkg/${enc(repo)}/${enc(name)}">${icon('popout', 15)}Otevřít stránku</a></div>
+            ${tab === 'versions' ? `<div class="feed">${versions.map((v) => { const m = d.versions[v]; const tags = Object.entries(d['dist-tags']).filter(([, x]) => x === v).map(([t]) => `<span class="badge warn">${esc(t)}</span>`).join(' '); return `<li>${tile('npm', 'tag')}<div class="tx"><b class="mono">${esc(v)}</b> ${tags} ${m.deprecated ? '<span class="badge off">deprecated</span>' : ''}<div class="when">${when(d.time[v])} · ${fmtBytes(m.dist.size)} · ${esc((m._npmUser || {}).name || '')}</div></div><button type="button" class="btn small" data-dl="${esc(v)}">${icon('download', 15)}tgz</button></li>`; }).join('')}</div>` : ''}
+            ${tab === 'install' ? `<pre>npm install ${esc(d.name)} --registry ${esc(reg)}\n\n# .npmrc\nregistry=${esc(reg)}\n${esc(reg.replace(/^https?:/, ''))}:_authToken=&lt;token&gt;</pre>` : ''}
+            ${tab === 'readme' ? `<pre style="white-space:pre-wrap">${esc(d.readme || '(bez README)')}</pre>` : ''}
+            ${tab === 'json' ? `<pre>${esc(JSON.stringify(d.versions[d['dist-tags'].latest], null, 2))}</pre>` : ''}`;
+          $$('[data-t]', body).forEach((b) => { b.onclick = () => { tab = w.tab = b.dataset.t; draw(); }; });
+          $$('[data-dl]', body).forEach((b) => { b.onclick = async () => download(await run(() => rr.downloadTarball(repo, name, b.dataset.dl)), `${name.split('/').pop()}-${b.dataset.dl}.tgz`); });
+        };
+        draw();
+      },
+    });
+  }
+
+  async function fileWindow(title, loader, opts = {}) {
+    wm.open({
+      id: `file:${title}`, title, icon: opts.icon || 'file', width: 720, height: 520,
+      render: async (body) => {
+        const { bytes, size, modified } = await loader();
+        const text = bytes.length < 1024 * 1024 && !bytes.slice(0, 8000).includes(0) ? new TextDecoder().decode(bytes) : null;
+        let content = text;
+        if (text !== null && /\.json$/i.test(title)) { try { content = JSON.stringify(JSON.parse(text), null, 2); } catch { /* keep raw */ } }
+        body.innerHTML = `<div class="row"><span class="muted small">${fmtBytes(size ?? bytes.length)}${modified ? ` · ${esc(fmtDate(modified))}` : ''}</span><span class="spacer"></span><button type="button" class="btn small" data-dl>${icon('download', 15)}Stáhnout</button></div>
+          <pre style="flex:1;max-height:none">${content === null ? '(binární soubor – použijte stažení)' : esc(content)}</pre>`;
+        $('[data-dl]', body).onclick = () => download(bytes, title.split('/').pop());
+      },
+    });
+  }
+
+  function liveLogWindow() {
+    if (!isAdmin()) return toast('Logy vidí jen administrátor.', true);
+    wm.open({
+      id: 'livelog', title: 'Živý log požadavků', icon: 'terminal', width: 760, height: 360,
+      html: '<div class="term" data-term></div>',
+      onMount: (body, w) => {
+        body.classList.add('flush');
+        const draw = async () => {
+          const l = await rr.getLogs({ limit: 120, type: 'requests' }).catch(() => null);
+          if (!l) return;
+          const term = $('[data-term]', body);
+          const atBottom = term.scrollTop + term.clientHeight >= term.scrollHeight - 20;
+          term.innerHTML = l.requests.slice().reverse().map((r) => `<span class="t">${esc(new Date(r.time).toLocaleTimeString())}</span> <span class="s${String(r.status)[0]}">${r.status}</span> ${esc(r.method.padEnd(6))} ${esc(r.url)} <span class="x">${r.ms} ms ${esc(r.user)} ${esc(r.cache || '')}</span>`).join('\n');
+          if (atBottom) term.scrollTop = term.scrollHeight;
+        };
+        draw();
+        w.every(2000, draw);
+      },
+    });
   }
 
   // ------------------------------------------------------------------ views
   const views = {};
 
-  views.dashboard = async () => {
-    const [st, logs] = await Promise.all([rr.status(), me.role === 'admin' ? rr.getLogs({ limit: 12, type: 'audit' }) : { audit: [] }]);
-    const v = setView('Přehled', `
-      <div class="grid">
-        <div class="card"><div class="muted">Verze</div><div class="stat">${esc(st.version)}</div><div class="muted small">Node ${esc(st.node)}</div></div>
-        <div class="card"><div class="muted">Repozitáře</div><div class="stat">${st.repos}</div><div class="muted small">výchozí: ${esc(st.defaultRepo)}</div></div>
-        <div class="card"><div class="muted">Balíčky</div><div class="stat">${st.packages}</div><div class="muted small">stažení: ${st.stats.downloads}</div></div>
-        <div class="card"><div class="muted">Směrovací pravidla</div><div class="stat">${st.routes}</div><div class="muted small">proxy požadavků: ${st.stats.proxied}</div></div>
-        <div class="card"><div class="muted">Cache</div><div class="stat">${st.cache.entries}</div><div class="muted small">${fmtBytes(st.cache.bytes)} · hit ${st.cache.hits} / miss ${st.cache.misses}</div></div>
-        <div class="card"><div class="muted">Uptime</div><div class="stat">${Math.round(st.uptime / 60)} min</div><div class="muted small">požadavků: ${st.stats.requests}, chyb: ${st.stats.errors}</div></div>
-      </div>
-      <div class="card"><h2>Připojení npm / yarn / pnpm / bun</h2>
-        <pre>npm config set registry ${esc(st.registry)}
-npm login --registry ${esc(st.registry)} --auth-type=legacy
-# nebo do .npmrc:
-registry=${esc(st.registry)}
-${esc(st.registry.replace(/^https?:/, ''))}:_authToken=&lt;token&gt;
+  // ---------------------------------------------------------------- dashboard (widgets)
+  async function loadDash() {
+    const [st, repos] = await Promise.all([rr.status(), rr.listRepos()]);
+    repoCache = repos;
+    const stats = await Promise.all(repos.map((r) => rr.getRepoStats(r.name).catch(() => null)));
+    const admin = isAdmin();
+    const [logs, cache, tasks, repl] = admin
+      ? await Promise.all([rr.getLogs({ limit: 1000 }).catch(() => null), rr.cacheStats().catch(() => null), rr.listTasks().catch(() => []), rr.listReplications({ limit: 50 }).catch(() => [])])
+      : [null, null, [], []];
+    return { st, repos, stats, logs, cache, tasks, repl };
+  }
 
-yarn config set npmRegistryServer ${esc(st.registry)}     # yarn berry
-pnpm config set registry ${esc(st.registry)}
-bun install --registry ${esc(st.registry)}</pre></div>
-      <div class="card"><h2>Docker image</h2>
-        <pre>docker login ${esc(st.registry.replace(/^https?:\/\//, '').replace(/\/$/, ''))} -u &lt;uživatel&gt;      # heslo nebo token
-docker tag moje-image ${esc(st.registry.replace(/^https?:\/\//, '').replace(/\/$/, ''))}/tym/moje-image:1.0
-docker push ${esc(st.registry.replace(/^https?:\/\//, '').replace(/\/$/, ''))}/tym/moje-image:1.0
-docker pull ${esc(st.registry.replace(/^https?:\/\//, '').replace(/\/$/, ''))}/tym/moje-image:1.0</pre>
-        <p class="muted small">Jiný host než localhost vyžaduje HTTPS (reverse proxy) nebo položku "insecure-registries" v nastavení Docker démona.</p></div>
-      <div class="card"><h2>Poslední změny</h2>
-        <div class="table-wrap"><table><tr><th>Čas</th><th>Uživatel</th><th>Akce</th><th>Cíl</th></tr>
-        ${logs.audit.map((a) => `<tr><td>${fmtDate(a.time)}</td><td>${esc(a.user)}</td><td>${esc(a.action)}</td><td>${esc(a.target)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">zatím nic</td></tr>'}
-        </table></div></div>`);
+  const ACT_ICON = (a) => (/publish|unpublish/.test(a) ? ['package', 'npm'] : /git/.test(a) ? ['git', 'git'] : /docker/.test(a) ? ['image', 'docker'] : /delete|purge/.test(a) ? ['trash', ''] : /login/.test(a) ? ['key', ''] : /route|replic/.test(a) ? ['route', ''] : /cleanup/.test(a) ? ['broom', ''] : /upload|file/.test(a) ? ['upload', ''] : ['activity', '']);
+
+  const WIDGETS = [
+    {
+      id: 'traffic', title: 'Provoz – poslední hodina', icon: 'activity', size: 'w8', admin: true,
+      render(el, c) {
+        if (!c.logs) { el.innerHTML = '<p class="muted">Bez dat.</p>'; return; }
+        const now = Date.now();
+        const buckets = Array.from({ length: 60 }, (_, i) => ({ title: `před ${59 - i} min`, values: { hit: 0, proxy: 0, local: 0, err: 0 } }));
+        let total = 0;
+        let errs = 0;
+        for (const r of c.logs.requests) {
+          const m = Math.floor((now - Date.parse(r.time)) / 60000);
+          if (m < 0 || m > 59) continue;
+          const b = buckets[59 - m].values;
+          total++;
+          if (r.status >= 500) { b.err++; errs++; } else if (/HIT|STALE/.test(r.cache)) b.hit++; else if (r.cache) b.proxy++; else b.local++;
+        }
+        const series = [{ key: 'local', label: 'lokálně', color: 'var(--accent)' }, { key: 'hit', label: 'z cache', color: 'var(--ok)' }, { key: 'proxy', label: 'upstream', color: 'var(--info)' }, { key: 'err', label: 'chyby 5xx', color: 'var(--err)' }];
+        el.innerHTML = `<div class="row between"><div class="legend">${series.map((s) => `<span><i style="background:${s.color}"></i>${s.label}</span>`).join('')}</div>
+          <span class="mono small muted">${fmtNum(total)} požadavků · ${(total / 60).toFixed(1)}/min · chyby ${errs}</span></div>
+          ${RRUI.bars(buckets, series, { height: 170 })}<div class="axis"><span>−60 min</span><span>−30 min</span><span>teď</span></div>`;
+      },
+    },
+    {
+      id: 'cache', title: 'Cache', icon: 'cache', size: 'w4', admin: true,
+      render(el, c) {
+        const s = c.cache || { hits: 0, misses: 0, entries: 0, bytes: 0, expired: 0, stale: 0 };
+        const rate = s.hits + s.misses ? s.hits / (s.hits + s.misses) : 0;
+        el.innerHTML = `<div class="row" style="gap:18px;align-items:center">${RRUI.ring(rate, { size: 124, label: 'Úspěšnost cache', sub: 'hit rate' })}
+          <div style="display:flex;flex-direction:column;gap:6px;font-size:13px;flex:1;min-width:140px">
+            <div class="row between"><span class="muted">položek</span><b class="mono">${fmtNum(s.entries)}</b></div>
+            <div class="row between"><span class="muted">velikost</span><b class="mono">${fmtBytes(s.bytes)}</b></div>
+            <div class="row between"><span class="muted">hit / miss</span><b class="mono">${fmtNum(s.hits)} / ${fmtNum(s.misses)}</b></div>
+            <div class="row between"><span class="muted">expirované</span><b class="mono">${fmtNum(s.expired)}</b></div></div></div>
+          <div class="row"><button type="button" class="btn small" data-purge>${icon('broom', 15)}Smazat expirované</button><a class="btn small ghost" href="#/cache">Správa cache</a></div>`;
+        $('[data-purge]', el).onclick = async () => { const r = await run(() => rr.purgeCache({ expired: 1 })); toast(`Smazáno: ${r.removed}`); };
+      },
+    },
+    {
+      id: 'activity', title: 'Aktivita', icon: 'bell', size: 'w6', admin: true,
+      render(el, c) {
+        const list = c.logs ? c.logs.audit.slice(0, 9) : [];
+        el.innerHTML = list.length ? `<ul class="feed">${list.map((a) => { const [ic, ty] = ACT_ICON(a.action); return `<li>${tile(ty || 'x', ic)}<div class="tx"><b>${esc(a.user)}</b> ${esc(a.action.replace(/-/g, ' '))} <code>${esc(a.target)}</code><div class="when">${when(a.time)}</div></div></li>`; }).join('')}</ul><a class="small" href="#/logs?tab=audit">Celý audit →</a>` : '<p class="muted">Zatím žádná aktivita.</p>';
+      },
+    },
+    {
+      id: 'repos', title: 'Repozitáře', icon: 'repo', size: 'w6',
+      render(el, c) {
+        el.innerHTML = `<div class="repo-cards">${c.repos.map((r) => {
+          const count = r.packages ?? r.images ?? r.gitRepos;
+          const unit = r.type === 'docker' ? 'image' : r.type === 'git' ? 'repozitářů' : r.type === 'generic' ? '' : 'balíčků';
+          const q = r.quota ? Math.min(100, Math.round((r.quota.usedBytes / r.quota.limitBytes) * 100)) : null;
+          return `<a class="repo-card" href="#/repo/${enc(r.name)}"><div class="top">${tile(r.type)}<span class="ty">${esc(r.type)}${r.default ? ' · výchozí' : ''}</span></div>
+            <div><b>${esc(r.name)}</b><div class="muted small">${count !== undefined ? `${fmtNum(count)} ${unit}` : esc(r.description || 'soubory')}</div></div>
+            ${q !== null ? `<span class="meter" title="kvóta ${q} %" style="width:100%"><i style="width:${q}%;background:${q > 85 ? 'var(--err)' : 'var(--accent)'}"></i></span>` : `<span class="small muted">${r.immutable ? 'neměnný · ' : ''}${r.public ? 'veřejný' : 'soukromý'}</span>`}</a>`;
+        }).join('')}</div>`;
+      },
+    },
+    {
+      id: 'downloads', title: 'Stažení – 30 dní', icon: 'download', size: 'w8',
+      render(el, c) {
+        const types = { npm: 'var(--accent)', docker: 'var(--info)', git: 'var(--ok)', generic: 'var(--muted)', group: 'var(--text2)' };
+        const days = (c.stats.find(Boolean) || { days: [] }).days.map((d) => ({ title: d.day, values: {} }));
+        c.stats.forEach((s, i) => {
+          if (!s) return;
+          const t = c.repos[i].type;
+          s.days.forEach((d, j) => { if (days[j]) days[j].values[t] = (days[j].values[t] || 0) + d.downloads; });
+        });
+        const present = Object.keys(types).filter((t) => days.some((d) => d.values[t]));
+        const series = (present.length ? present : ['npm']).map((t) => ({ key: t, label: t, color: types[t] }));
+        const total = days.reduce((n, d) => n + Object.values(d.values).reduce((a, b) => a + b, 0), 0);
+        const top = c.stats.flatMap((s, i) => (s ? s.top.slice(0, 3).map((t) => ({ ...t, repo: c.repos[i].name })) : [])).sort((a, b) => b.downloads - a.downloads).slice(0, 5);
+        el.innerHTML = `<div class="row between">${RRUI.legend(series)}<span class="mono small muted">celkem ${fmtNum(total)}</span></div>
+          ${RRUI.bars(days, series, { height: 150 })}<div class="axis"><span>${esc((days[0] || {}).title || '')}</span><span>dnes</span></div>
+          ${top.length ? `<div class="small muted">Nejstahovanější: ${top.map((t) => `<code>${esc(t.item)}</code> <span class="mono">${fmtNum(t.downloads)}</span>`).join(' · ')}</div>` : ''}`;
+      },
+    },
+    {
+      id: 'jobs', title: 'Úlohy a replikace', icon: 'clock', size: 'w4', admin: true,
+      render(el, c) {
+        const failed = c.repl.filter((j) => j.status === 'error').length;
+        el.innerHTML = `<ul class="feed">${c.tasks.map((t) => `<li>${tile(t.lastError ? 'x' : 'git', t.lastError ? 'alert' : 'clock')}<div class="tx"><b>${esc(t.name)}</b><div class="when">další ${esc(ago(t.nextRun))}${t.lastError ? ` · <span class="error">${esc(t.lastError)}</span>` : ''}</div></div>
+          <button type="button" class="btn small ghost" data-run="${esc(t.id)}" aria-label="Spustit ${esc(t.name)}">${icon('play', 14)}</button></li>`).join('')}</ul>
+          <a href="#/jobs" class="row small">${failed ? `<span class="badge off">${failed} neúspěšných replikací</span>` : `<span class="badge ok">replikace v pořádku</span>`}<span>→</span></a>`;
+        $$('[data-run]', el).forEach((b) => { b.onclick = async () => { await run(() => rr.runTask(b.dataset.run), 'Úloha dokončena'); }; });
+      },
+    },
+    {
+      id: 'connect', title: 'Připojení klientů', icon: 'link', size: 'w12',
+      render(el, c) {
+        const reg = c.st.registry;
+        const host = reg.replace(/^https?:\/\//, '').replace(/\/$/, '');
+        const snippets = {
+          npm: `npm config set registry ${reg}\nnpm login --registry ${reg} --auth-type=legacy\n# nebo .npmrc:\n${reg.replace(/^https?:/, '')}:_authToken=<token>\n\nyarn config set npmRegistryServer ${reg}\npnpm config set registry ${reg}`,
+          docker: `docker login ${host} -u <uživatel>        # heslo nebo token\ndocker tag moje-image ${host}/tym/moje-image:1.0\ndocker push ${host}/tym/moje-image:1.0`,
+          git: `git remote add rr ${reg}git/tym/projekt.git\ngit push rr main          # repozitář se vytvoří\ngit clone ${reg}git/tym/projekt.git`,
+          klienti: `curl -fsSL ${reg}install.sh | bash      # rr, rr-gui, rr-web\nrr login admin && rr status`,
+        };
+        let cur = 'npm';
+        const draw = () => {
+          el.innerHTML = `<div class="tabs">${Object.keys(snippets).map((k) => `<button type="button" data-s="${k}" class="${k === cur ? 'active' : ''}">${k}</button>`).join('')}<span class="spacer"></span><button type="button" class="btn small ghost" data-copy>${icon('copy', 15)}Kopírovat</button></div><pre>${esc(snippets[cur])}</pre>`;
+          $$('[data-s]', el).forEach((b) => { b.onclick = () => { cur = b.dataset.s; draw(); }; });
+          $('[data-copy]', el).onclick = () => { if (navigator.clipboard) navigator.clipboard.writeText(snippets[cur]); toast('Zkopírováno'); };
+        };
+        draw();
+      },
+    },
+  ];
+
+  function kpis(c) {
+    const s = c.st;
+    const images = c.repos.reduce((n, r) => n + (r.images || 0), 0);
+    const daySeries = (c.stats.find(Boolean) || { days: [] }).days.map((d, j) => c.stats.reduce((n, x) => n + (x ? x.days[j].downloads : 0), 0));
+    const dl30 = daySeries.reduce((a, b) => a + b, 0);
+    const minute = [];
+    if (c.logs) {
+      const now = Date.now();
+      for (let i = 29; i >= 0; i--) minute.push(c.logs.requests.filter((r) => Math.floor((now - Date.parse(r.time)) / 60000) === i).length);
+    }
+    const rate = c.cache && c.cache.hits + c.cache.misses ? Math.round((c.cache.hits / (c.cache.hits + c.cache.misses)) * 100) : null;
+    const k = (label, value, sub, ic, ty, spark, color) => `<article class="kpi"><div class="kpi-top"><span class="tile ${ty}">${icon(ic, 18)}</span>${esc(label)}</div>
+      <div class="kpi-row"><div><div class="kpi-v">${value}</div><div class="kpi-d">${sub}</div></div>${spark && spark.length > 1 ? RRUI.sparkline(spark, { color }) : ''}</div></article>`;
+    return [
+      k('Balíčky', fmtNum(s.packages), `${c.repos.filter((r) => r.type === 'npm').length} npm repozitáře`, 'package', 'npm', null),
+      k('Stažení · 30 dní', fmtNum(dl30), `dnes ${fmtNum(daySeries[daySeries.length - 1] || 0)}`, 'download', 'git', daySeries, 'var(--ok)'),
+      k('Docker image', fmtNum(images), `${s.gitRepos || 0} git repozitářů`, 'image', 'docker', null),
+      k('Požadavky', fmtNum(s.stats.requests), `chyby ${fmtNum(s.stats.errors)} · proxy ${fmtNum(s.stats.proxied)}`, 'activity', 'npm', minute, 'var(--accent)'),
+      rate !== null ? k('Cache hit', `${rate} %`, `${fmtNum(c.cache.entries)} položek`, 'cache', 'git', null) : k('Uptime', `${Math.round(s.uptime / 3600)} h`, `Node ${esc(s.node)}`, 'clock', 'git', null),
+    ].join('');
+  }
+
+  views.dashboard = async () => {
+    const c = await loadDash();
+    const hidden = RRUI.LS.get('dash.hidden', []);
+    const avail = WIDGETS.filter((w) => !w.admin || isAdmin());
+    const hour = new Date().getHours();
+    const hello = hour < 10 ? 'Dobré ráno' : hour < 18 ? 'Dobrý den' : 'Dobrý večer';
+    const v = setView('Přehled', `
+      <div class="hero-hello"><div><h2 style="margin:0;font-size:24px">${hello}, ${esc(me.name)}</h2><span class="muted">${esc(c.st.title)} ${esc(c.st.version)} · běží ${Math.round(c.st.uptime / 3600)} h · ${c.repos.length} repozitářů</span></div>
+        <div class="row"><button type="button" class="btn small" id="editDash">${icon('edit', 15)}Upravit přehled</button>${isAdmin() ? `<button type="button" class="btn small" id="logWin">${icon('terminal', 15)}Živý log</button>` : ''}</div></div>
+      <div class="widget-pick hidden" id="pick">${avail.map((w) => `<label class="check"><input type="checkbox" data-wid="${w.id}"${hidden.includes(w.id) ? '' : ' checked'}> ${esc(w.title)}</label>`).join('')}</div>
+      <section class="kpis" aria-label="Klíčové ukazatele">${kpis(c)}</section>
+      <section class="widgets">${avail.filter((w) => !hidden.includes(w.id)).map((w) => `<article class="widget ${w.size}" data-w="${w.id}">
+        <header class="widget-head"><h2>${icon(w.icon, 17)}${esc(w.title)}</h2>
+          <button type="button" class="wbtn" data-wa="refresh" title="Obnovit" aria-label="Obnovit ${esc(w.title)}">${icon('refresh', 15)}</button>
+          <button type="button" class="wbtn" data-wa="pop" title="Otevřít v okně" aria-label="Otevřít ${esc(w.title)} v okně">${icon('popout', 15)}</button>
+          <button type="button" class="wbtn" data-wa="hide" title="Skrýt" aria-label="Skrýt ${esc(w.title)}">${icon('x', 15)}</button></header>
+        <div class="widget-body"></div></article>`).join('')}</section>`, 'grid');
+    for (const w of avail) {
+      const card = $(`[data-w="${w.id}"]`, v);
+      if (card) { try { w.render($('.widget-body', card), c); } catch (e) { $('.widget-body', card).innerHTML = `<p class="error">${esc(e.message)}</p>`; } }
+    }
+    $$('[data-wa]', v).forEach((b) => {
+      const id = b.closest('[data-w]').dataset.w;
+      const w = WIDGETS.find((x) => x.id === id);
+      b.onclick = async () => {
+        if (b.dataset.wa === 'hide') { RRUI.LS.set('dash.hidden', [...new Set([...hidden, id])]); route(); }
+        if (b.dataset.wa === 'refresh') { const body = $(`[data-w="${id}"] .widget-body`, v); body.style.opacity = '0.5'; w.render(body, await loadDash()); body.style.opacity = ''; }
+        if (b.dataset.wa === 'pop') {
+          wm.open({
+            id: `widget:${id}`, title: w.title, icon: w.icon, width: w.size === 'w4' ? 420 : 720, height: 420,
+            render: async (body, win) => { w.render(body, await loadDash()); if (!win.refreshing) { win.refreshing = true; win.every(15000, async () => w.render(body, await loadDash())); } },
+          });
+        }
+      };
+    });
+    $('#editDash', v).onclick = () => $('#pick', v).classList.toggle('hidden');
+    $$('[data-wid]', v).forEach((cb) => {
+      cb.onchange = () => {
+        const h = new Set(RRUI.LS.get('dash.hidden', []));
+        if (cb.checked) h.delete(cb.dataset.wid); else h.add(cb.dataset.wid);
+        RRUI.LS.set('dash.hidden', [...h]);
+        route();
+      };
+    });
+    const lw = $('#logWin', v);
+    if (lw) lw.onclick = liveLogWindow;
     return v;
   };
 
+  // ---------------------------------------------------------------- repositories
   views.repos = async () => {
     const repos = await rr.listRepos();
-    const v = setView('Repozitáře', `
-      <div class="row"><button class="btn primary" id="newRepo">+ Nový repozitář</button></div>
-      <div class="card table-wrap"><table>
-        <tr><th>Název</th><th>Typ</th><th>Balíčky</th><th>Veřejný</th><th>Publikace</th><th>URL</th><th>Popis</th><th></th></tr>
-        ${repos.map((r) => `<tr class="click" data-repo="${esc(r.name)}">
-          <td><b>${esc(r.name)}</b> ${r.default ? '<span class="badge blue">výchozí</span>' : ''}</td><td>${esc(r.type)}</td><td>${r.packages ?? '–'}</td>
-          <td>${yes(r.public)}</td><td>${yes(r.allowPublish)}</td><td><code>${esc(registryUrl(r.name, r.default))}</code></td><td>${esc(r.description)}</td>
-          <td class="actions"><button class="btn small" data-edit="${esc(r.name)}">Upravit</button> <button class="btn small danger" data-del="${esc(r.name)}">Smazat</button></td></tr>`).join('')}
-      </table></div>`);
-    $('#newRepo', v).onclick = () => repoForm();
-    $$('tr[data-repo]', v).forEach((tr) => { tr.onclick = (e) => { if (!e.target.closest('button')) location.hash = `#/repo/${enc(tr.dataset.repo)}`; }; });
-    $$('[data-edit]', v).forEach((b) => { b.onclick = () => repoForm(repos.find((r) => r.name === b.dataset.edit)); });
-    $$('[data-del]', v).forEach((b) => { b.onclick = () => deleteRepo(b.dataset.del); });
+    repoCache = repos;
+    const v = setView('Repozitáře', '<div id="t"></div>', 'repo');
+    table('#t', {
+      id: 'repos', rows: repos, rowKey: (r) => r.name, placeholder: 'Hledat repozitář…',
+      sort: { key: 'name', dir: 1 },
+      groups: [{ key: 'type', label: 'typ', value: (r) => r.type }, { key: 'vis', label: 'viditelnost', value: (r) => (r.public ? 'veřejné' : 'soukromé') }],
+      toolbar: isAdmin() ? `<button type="button" class="btn small primary" data-new>${icon('plus', 15)}Nový repozitář</button>` : '',
+      columns: [
+        { key: 'name', label: 'Název', render: (r) => `${cellMain(r.type, r.name, r.description)}` },
+        { key: 'type', label: 'Typ', render: (r) => `<span class="pill">${esc(r.type)}</span>${r.default ? ' <span class="badge blue">výchozí</span>' : ''}` },
+        { key: 'count', label: 'Položek', align: 'right', value: (r) => r.packages ?? r.images ?? r.gitRepos ?? -1, render: (r) => `<span class="mono">${r.packages ?? r.images ?? r.gitRepos ?? '–'}</span>` },
+        { key: 'public', label: 'Veřejný', toggle: true, render: (r) => yes(r.public) },
+        { key: 'allowPublish', label: 'Publikace', toggle: true, render: (r) => yes(r.allowPublish) },
+        { key: 'flags', label: 'Politiky', toggle: true, sort: false, render: (r) => [r.immutable ? '<span class="badge warn">neměnný</span>' : '', r.quotaMb ? `<span class="badge plain">kvóta ${r.quotaMb} MB</span>` : '', r.acl && Object.keys(r.acl).length ? '<span class="badge blue">ACL</span>' : '', r.cleanup && r.cleanup.enabled ? '<span class="badge ok">čištění</span>' : ''].join(' ') },
+        { key: 'path', label: 'URL', toggle: true, hidden: true, render: (r) => `<code>${esc(r.path)}</code>` },
+        { key: 'actions', label: '', sort: false, align: 'right', render: (r) => (isAdmin() ? `${iconBtn(`data-edit="${esc(r.name)}"`, 'edit', 'Upravit')}${iconBtn(`data-del="${esc(r.name)}"`, 'trash', 'Smazat', 'danger')}` : '') },
+      ],
+      onRow: (r) => { location.hash = `#/repo/${enc(r.name)}`; },
+      onRender: (el) => {
+        const n = $('[data-new]', el);
+        if (n) n.onclick = () => repoForm();
+        $$('[data-edit]', el).forEach((b) => { b.onclick = () => repoForm(repos.find((r) => r.name === b.dataset.edit)); });
+        $$('[data-del]', el).forEach((b) => { b.onclick = () => deleteRepo(b.dataset.del); });
+      },
+    });
+    return v;
   };
 
   const REPO_TYPES = [['npm', 'npm (npm, yarn, pnpm, bun, deno)'], ['generic', 'generic (soubory)'], ['docker', 'docker (Docker / OCI image, API /v2/)'], ['git', 'git (git clone / push přes HTTP)'], ['group', 'group (skupina npm/generic repozitářů)']];
@@ -234,10 +509,10 @@ docker pull ${esc(st.registry.replace(/^https?:\/\//, '').replace(/\/$/, ''))}/t
         ${r.acl && Object.keys(r.acl).length ? `<p>Přístup: ${Object.entries(r.acl).map(([u, l]) => `<span class="badge">${esc(u)}: ${esc(l)}</span>`).join(' ')}</p>` : ''}
         <p class="muted small">Úložiště: <code>${esc(r.storage.dir)}</code></p>
         <div class="row">
-          ${r.type === 'npm' || r.type === 'group' ? `<a class="btn primary" href="#/packages/${enc(r.name)}">📦 Balíčky</a>` : ''}
-          ${r.type === 'git' ? `<a class="btn primary" href="#/git/${enc(r.name)}">🌿 Git repozitáře</a>` : ''}
-          ${r.type === 'docker' ? `<a class="btn primary" href="#/images/${enc(r.name)}">🐳 Image</a>` : ''}
-          <a class="btn" href="#/files/${enc(r.name)}">📁 Soubory</a>
+          ${r.type === 'npm' || r.type === 'group' ? `<a class="btn primary" href="#/packages/${enc(r.name)}">${icon('package', 16)}Balíčky</a>` : ''}
+          ${r.type === 'git' ? `<a class="btn primary" href="#/git/${enc(r.name)}">${icon('git', 16)}Git repozitáře</a>` : ''}
+          ${r.type === 'docker' ? `<a class="btn primary" href="#/images/${enc(r.name)}">${icon('image', 16)}Image</a>` : ''}
+          <a class="btn" href="#/files/${enc(r.name)}">${icon('folder', 16)}Soubory</a>
           <button class="btn" id="edit">Upravit</button><button class="btn danger" id="del">Smazat</button>
         </div></div>
       <div class="card"><h2>Čištění (retence)</h2>
@@ -245,7 +520,7 @@ docker pull ${esc(st.registry.replace(/^https?:\/\//, '').replace(/\/$/, ''))}/t
         <div class="row"><button class="btn" id="preview">Náhled čištění</button><button class="btn danger" id="clean" ${r.immutable ? 'disabled' : ''}>Spustit čištění</button></div>
         <div id="cleanOut"></div></div>
       ${stats && stats.top.length ? `<div class="card table-wrap"><h2>Nejstahovanější</h2><table><tr><th>Položka</th><th>Stažení</th></tr>${stats.top.map((t) => `<tr><td>${esc(t.item)}</td><td>${t.downloads}</td></tr>`).join('')}</table></div>` : ''}
-      <div class="card"><h2>Použití</h2><pre>${esc(usage(r, reg))}</pre></div>`);
+      <div class="card"><h2>Použití</h2><pre>${esc(usage(r, reg))}</pre></div>`, 'repo');
     $('#edit', v).onclick = () => repoForm(r);
     $('#del', v).onclick = () => deleteRepo(r.name);
     const showClean = (res) => {
@@ -256,108 +531,151 @@ docker pull ${esc(st.registry.replace(/^https?:\/\//, '').replace(/\/$/, ''))}/t
     $('#clean', v).onclick = async () => { if (await confirmBox(`Spustit čištění repozitáře ${r.name}? Smazaná data nelze obnovit.`)) showClean(await run(() => rr.runCleanup(r.name, { dryRun: false }), 'Čištění dokončeno')); };
   };
 
+  // ---------------------------------------------------------------- packages
   views.packages = async (repoName) => {
     const repos = (await rr.listRepos()).filter((r) => r.type === 'npm' || r.type === 'group');
-    if (!repos.length) return setView('Balíčky', '<div class="card">Žádný npm repozitář.</div>');
+    repoCache = await rr.listRepos();
+    if (!repos.length) return setView('Balíčky', '<div class="card">Žádný npm repozitář.</div>', 'package');
     const repo = repoName || (repos.find((r) => r.default) || repos[0]).name;
     const q = new URLSearchParams(location.hash.split('?')[1] || '').get('q') || '';
-    const list = await rr.listPackages(repo, { q });
-    const v = setView('Balíčky', `
-      <div class="card row">
-        <label>Repozitář ${repoSelect(repos, repo, true)}</label>
-        <label style="flex:1">Filtr <input id="q" value="${esc(q)}" placeholder="název nebo popis"></label>
-        <label>Publikovat .tgz <input type="file" id="upload" accept=".tgz,.tar.gz" multiple></label>
-        <label>dist-tag <input id="tag" value="latest" style="width:100px"></label>
-      </div>
-      <div class="card table-wrap"><table>
-        <tr><th>Balíček</th><th>Poslední</th><th>Verze</th><th>Tagy</th><th>Popis</th><th>Změněno</th></tr>
-        ${list.map((p) => `<tr class="click" data-pkg="${esc(p.name)}" data-member="${esc(p.member || repo)}"><td><b>${esc(p.name)}</b></td><td>${esc(p.version)}</td><td>${p.versions}</td>
-          <td>${Object.entries(p.distTags || {}).map(([t, ver]) => `<span class="badge">${esc(t)}: ${esc(ver)}</span>`).join(' ')}</td>
-          <td>${esc(p.description)}</td><td>${fmtDate(p.modified)}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">žádné balíčky</td></tr>'}
-      </table></div>`);
+    const list = await rr.listPackages(repo);
+    const isGroup = (repos.find((r) => r.name === repo) || {}).type === 'group';
+    const v = setView('Balíčky', '<div id="t"></div>', 'package');
+    table('#t', {
+      id: 'packages', rows: list, rowKey: (p) => `${p.member || repo}/${p.name}`, q, placeholder: 'Hledat balíček, popis, verzi…',
+      sort: { key: 'modified', dir: -1 },
+      search: (p) => `${p.name} ${p.description} ${p.version} ${Object.keys(p.distTags || {}).join(' ')} ${(p.keywords || []).join(' ')}`,
+      groups: [
+        { key: 'scope', label: 'scope', value: (p) => (p.name.startsWith('@') ? p.name.split('/')[0] : 'bez scope') },
+        { key: 'age', label: 'stáří', value: (p) => age(p.modified) },
+        ...(isGroup ? [{ key: 'member', label: 'člen skupiny', value: (p) => p.member }] : []),
+      ],
+      toolbar: `${repoSelect(repos, repo, true)}
+        <label class="btn small" title="Publikovat .tgz">${icon('upload', 15)}Publikovat .tgz<input type="file" id="upload" accept=".tgz,.tar.gz" multiple class="sr"></label>
+        <label class="dt-select"><span>dist-tag</span><input id="tag" value="latest" style="width:90px;min-height:0;border:0;background:transparent;padding:0 4px"></label>`,
+      columns: [
+        { key: 'name', label: 'Balíček', render: (p) => cellMain('npm', p.name, p.description) },
+        { key: 'version', label: 'Poslední', value: (p) => p.version, render: (p) => `<span class="mono">${esc(p.version)}</span>` },
+        { key: 'versions', label: 'Verzí', align: 'right', render: (p) => `<span class="mono">${p.versions}</span>` },
+        { key: 'tags', label: 'Tagy', toggle: true, sort: false, render: (p) => Object.entries(p.distTags || {}).filter(([t]) => t !== 'latest').map(([t, ver]) => `<span class="badge warn">${esc(t)} ${esc(ver)}</span>`).join(' ') },
+        { key: 'member', label: 'Repozitář', toggle: true, hidden: !isGroup, value: (p) => p.member || repo },
+        { key: 'license', label: 'Licence', toggle: true, hidden: true, value: (p) => p.license || '' },
+        { key: 'modified', label: 'Změněno', value: (p) => p.modified, render: (p) => when(p.modified), nowrap: true },
+        { key: 'act', label: '', sort: false, align: 'right', render: (p) => iconBtn(`data-win="${esc(p.name)}" data-m="${esc(p.member || repo)}"`, 'popout', 'Otevřít v okně') },
+      ],
+      actions: [{ label: 'Smazat vybrané', icon: 'trash', danger: true, run: async (sel) => {
+        if (!(await confirmBox(`Smazat ${sel.length} balíčků se všemi verzemi?`))) return;
+        for (const p of sel) await run(() => rr.deletePackage(p.member || repo, p.name));
+        toast(`Smazáno: ${sel.length}`); route();
+      } }],
+      onRow: (p) => { location.hash = `#/pkg/${enc(p.member || repo)}/${enc(p.name)}`; },
+      onRender: (el) => {
+        $$('[data-win]', el).forEach((b) => { b.onclick = () => pkgWindow(b.dataset.m, b.dataset.win); });
+      },
+    });
     $('#repoSel', v).onchange = (e) => { location.hash = `#/packages/${enc(e.target.value)}`; };
-    $('#q', v).onkeydown = (e) => { if (e.key === 'Enter') location.hash = `#/packages/${enc(repo)}?q=${enc(e.target.value)}`; };
     $('#upload', v).onchange = async (e) => {
       for (const f of e.target.files) await run(async () => rr.uploadPackage(repo, await readFile(f), { tag: $('#tag', v).value }), `Publikováno: ${f.name}`);
       route();
     };
-    $$('tr[data-pkg]', v).forEach((tr) => { tr.onclick = () => { location.hash = `#/pkg/${enc(tr.dataset.member)}/${enc(tr.dataset.pkg)}`; }; });
+    return v;
   };
 
   views.pkg = async (repo, name) => {
     const d = await rr.getPackage(repo, name);
-    const versions = Object.keys(d.versions).reverse();
+    const versions = Object.keys(d.versions);
     const reg = registryUrl(repo, (await rr.getRepo(repo)).default);
+    const latest = d['dist-tags'].latest;
     const v = setView(name, `
-      <div class="row"><a href="#/packages/${enc(repo)}">← balíčky v ${esc(repo)}</a></div>
-      <div class="card"><h2>${esc(d.name)} <span class="badge blue">${esc(d['dist-tags'].latest)}</span></h2>
-        <p>${esc(d.description)}</p>
-        <p class="muted small">Správci: ${(d.maintainers || []).map((m) => esc(m.name)).join(', ')} · vytvořeno ${fmtDate(d.time.created)} · změněno ${fmtDate(d.time.modified)}</p>
-        <pre>npm install ${esc(d.name)} --registry ${esc(reg)}</pre>
-        <div class="row" style="margin-top:10px"><button class="btn danger" id="delPkg">Smazat celý balíček</button></div>
+      <div class="row"><a class="btn small ghost" href="#/packages/${enc(repo)}">${icon('up', 15)}Balíčky v ${esc(repo)}</a><span class="spacer"></span>
+        <button type="button" class="btn small" id="winPkg">${icon('popout', 15)}Otevřít v okně</button>
+        <button type="button" class="btn small danger" id="delPkg">${icon('trash', 15)}Smazat balíček</button></div>
+      <div class="kpis">
+        <article class="kpi"><div class="kpi-top"><span class="tile npm">${icon('package', 18)}</span>Poslední verze</div><div class="kpi-v">${esc(latest)}</div><div class="kpi-d">${when(d.time[latest])}</div></article>
+        <article class="kpi"><div class="kpi-top"><span class="tile git">${icon('tag', 18)}</span>Verzí</div><div class="kpi-v">${versions.length}</div><div class="kpi-d">${Object.keys(d['dist-tags']).length} dist-tagů</div></article>
+        <article class="kpi"><div class="kpi-top"><span class="tile docker">${icon('users', 18)}</span>Správci</div><div class="kpi-v" style="font-size:20px">${(d.maintainers || []).map((m) => esc(m.name)).join(', ') || '–'}</div><div class="kpi-d">vytvořeno ${when(d.time.created)}</div></article>
       </div>
-      <div class="card"><h2>Dist-tagy</h2>
-        <div class="row">${Object.entries(d['dist-tags']).map(([t, ver]) => `<span class="badge">${esc(t)} → ${esc(ver)} ${t !== 'latest' ? `<a href="#" data-untag="${esc(t)}">✕</a>` : ''}</span>`).join(' ')}</div>
-        <div class="row" style="margin-top:10px"><input id="tagName" placeholder="tag (např. beta)" style="width:160px">
-          <select id="tagVer" style="width:160px">${versions.map((x) => `<option>${esc(x)}</option>`).join('')}</select>
-          <button class="btn" id="setTag">Nastavit tag</button></div>
+      <div class="card"><h2>${icon('terminal', 17)}Instalace</h2><p class="muted" style="margin:0 0 10px">${esc(d.description)}</p><pre>npm install ${esc(d.name)} --registry ${esc(reg)}</pre></div>
+      <div class="card"><h2>${icon('tag', 17)}Dist-tagy</h2>
+        <div class="row">${Object.entries(d['dist-tags']).map(([t, ver]) => `<span class="badge warn">${esc(t)} → ${esc(ver)}${t !== 'latest' ? ` <a href="#" data-untag="${esc(t)}" aria-label="Smazat tag ${esc(t)}">${icon('x', 12)}</a>` : ''}</span>`).join(' ')}</div>
+        <div class="row" style="margin-top:12px"><input id="tagName" placeholder="tag (např. beta)" style="width:180px"><select id="tagVer" style="width:180px">${versions.slice().reverse().map((x) => `<option>${esc(x)}</option>`).join('')}</select><button class="btn" id="setTag">Nastavit tag</button></div>
       </div>
-      <div class="card table-wrap"><h2>Verze (${versions.length})</h2><table>
-        <tr><th>Verze</th><th>Publikováno</th><th>Velikost</th><th>Publikoval</th><th>Stav</th><th></th></tr>
-        ${versions.map((ver) => { const m = d.versions[ver]; return `<tr><td><b>${esc(ver)}</b></td><td>${fmtDate(d.time[ver])}</td><td>${fmtBytes(m.dist.size)}</td>
-          <td>${esc((m._npmUser || {}).name || '')}</td><td>${m.deprecated ? `<span class="badge off">deprecated: ${esc(m.deprecated)}</span>` : ''}</td>
-          <td class="actions"><button class="btn small" data-dl="${esc(ver)}">⬇ tgz</button> <button class="btn small" data-dep="${esc(ver)}">Deprecate</button> <button class="btn small danger" data-delv="${esc(ver)}">Smazat</button></td></tr>`; }).join('')}
-      </table></div>
-      <div class="card"><h2>README</h2><pre>${esc(d.readme || '(bez README)')}</pre></div>
-      <div class="card"><h2>package.json (${esc(d['dist-tags'].latest)})</h2><pre>${esc(JSON.stringify(d.versions[d['dist-tags'].latest], null, 2))}</pre></div>`);
+      <div id="vt"></div>
+      <div class="card"><h2>${icon('file', 17)}README</h2><pre style="white-space:pre-wrap">${esc(d.readme || '(bez README)')}</pre></div>
+      <div class="card"><h2>${icon('file', 17)}package.json (${esc(latest)})</h2><pre>${esc(JSON.stringify(d.versions[latest], null, 2))}</pre></div>`, 'package');
+    const rows = versions.map((ver) => ({ ver, m: d.versions[ver], time: d.time[ver], tags: Object.entries(d['dist-tags']).filter(([, x]) => x === ver).map(([t]) => t) }));
+    table('#vt', {
+      id: 'versions', rows, rowKey: (r) => r.ver, placeholder: 'Hledat verzi…', sort: { key: 'time', dir: -1 },
+      groups: [{ key: 'major', label: 'hlavní verze', value: (r) => `${r.ver.split('.')[0]}.x` }, { key: 'kind', label: 'druh', value: (r) => (r.ver.includes('-') ? 'pre-release' : 'stabilní') }],
+      columns: [
+        { key: 'ver', label: 'Verze', value: (r) => r.ver, render: (r) => `<b class="mono">${esc(r.ver)}</b> ${r.tags.map((t) => `<span class="badge warn">${esc(t)}</span>`).join(' ')}` },
+        { key: 'time', label: 'Publikováno', value: (r) => r.time, render: (r) => when(r.time) },
+        { key: 'size', label: 'Velikost', align: 'right', value: (r) => r.m.dist.size || 0, render: (r) => `<span class="mono">${fmtBytes(r.m.dist.size)}</span>` },
+        { key: 'user', label: 'Publikoval', toggle: true, value: (r) => (r.m._npmUser || {}).name || '' },
+        { key: 'dep', label: 'Stav', value: (r) => (r.m.deprecated ? 1 : 0), render: (r) => (r.m.deprecated ? `<span class="badge off" title="${esc(r.m.deprecated)}">deprecated</span>` : '<span class="badge ok">aktivní</span>') },
+        { key: 'act', label: '', sort: false, align: 'right', render: (r) => `${iconBtn(`data-dl="${esc(r.ver)}"`, 'download', 'Stáhnout tgz')}${iconBtn(`data-dep="${esc(r.ver)}"`, 'alert', 'Deprecate')}${iconBtn(`data-delv="${esc(r.ver)}"`, 'trash', 'Smazat verzi', 'danger')}` },
+      ],
+      onRender: (el) => {
+        $$('[data-dl]', el).forEach((b) => { b.onclick = async () => download(await run(() => rr.downloadTarball(repo, name, b.dataset.dl)), `${name.split('/').pop()}-${b.dataset.dl}.tgz`); });
+        $$('[data-dep]', el).forEach((b) => {
+          b.onclick = () => modal(`<h2>Deprecate ${esc(name)}@${esc(b.dataset.dep)}</h2><label>Zpráva (prázdná = zrušit) <input id="msg"></label>
+            <div class="row"><span class="spacer"></span><button class="btn" data-close>Zrušit</button><button class="btn primary" id="ok">Uložit</button></div>`, (m, close) => {
+            $('#ok', m).onclick = async () => { await run(() => rr.deprecateVersion(repo, name, b.dataset.dep, { message: $('#msg', m).value }), 'Uloženo'); close(); route(); };
+          });
+        });
+        $$('[data-delv]', el).forEach((b) => { b.onclick = async () => { if (await confirmBox(`Smazat ${name}@${b.dataset.delv}?`)) { await run(() => rr.deleteVersion(repo, name, b.dataset.delv), 'Verze smazána'); route(); } }; });
+      },
+    });
+    $('#winPkg', v).onclick = () => pkgWindow(repo, name);
     $('#delPkg', v).onclick = async () => { if (await confirmBox(`Smazat ${name} se všemi verzemi?`)) { await run(() => rr.deletePackage(repo, name), 'Smazáno'); location.hash = `#/packages/${enc(repo)}`; } };
     $('#setTag', v).onclick = async () => { await run(() => rr.setDistTag(repo, name, $('#tagName', v).value, { version: $('#tagVer', v).value }), 'Tag nastaven'); route(); };
     $$('[data-untag]', v).forEach((a) => { a.onclick = async (e) => { e.preventDefault(); await run(() => rr.deleteDistTag(repo, name, a.dataset.untag), 'Tag smazán'); route(); }; });
-    $$('[data-dl]', v).forEach((b) => { b.onclick = async () => download(await run(() => rr.downloadTarball(repo, name, b.dataset.dl)), `${name.split('/').pop()}-${b.dataset.dl}.tgz`); });
-    $$('[data-dep]', v).forEach((b) => {
-      b.onclick = () => modal(`<h2>Deprecate ${esc(name)}@${esc(b.dataset.dep)}</h2><label>Zpráva (prázdná = zrušit) <input id="msg"></label>
-        <div class="row"><span class="spacer"></span><button class="btn" data-close>Zrušit</button><button class="btn primary" id="ok">Uložit</button></div>`, (el, close) => {
-        $('#ok', el).onclick = async () => { await run(() => rr.deprecateVersion(repo, name, b.dataset.dep, { message: $('#msg', el).value }), 'Uloženo'); close(); route(); };
-      });
-    });
-    $$('[data-delv]', v).forEach((b) => { b.onclick = async () => { if (await confirmBox(`Smazat ${name}@${b.dataset.delv}?`)) { await run(() => rr.deleteVersion(repo, name, b.dataset.delv), 'Verze smazána'); route(); } }; });
+    return v;
   };
 
+  // ---------------------------------------------------------------- files
   views.files = async (repoName, ...rest) => {
     const repos = await rr.listRepos();
-    const repo = repoName || (repos.find((r) => r.default) || repos[0]).name;
+    const repo = repoName || (repos.find((r) => r.type === 'generic') || repos.find((r) => r.default) || repos[0]).name;
     const path = `/${rest.map(decodeURIComponent).join('/')}`.replace(/\/+$/, '') || '/';
     const t = await rr.tree(repo, { path, depth: 1 });
     const parts = path.split('/').filter(Boolean);
     const link = (i) => `#/files/${enc(repo)}/${parts.slice(0, i).map(enc).join('/')}`;
-    const v = setView('Soubory', `
-      <div class="card row">
-        <label>Repozitář ${repoSelect(repos, repo)}</label>
-        <span class="spacer"></span>
-        <label>Nahrát soubory <input type="file" id="up" multiple></label>
-        <button class="btn" id="mk">+ Adresář</button>
-      </div>
-      <div class="card">
-        <div class="crumbs"><a href="${link(0)}">📁 ${esc(repo)}</a>${parts.map((p, i) => ` / <a href="${link(i + 1)}">${esc(p)}</a>`).join('')}</div>
-        <div class="table-wrap"><table>
-          <tr><th>Název</th><th>Velikost</th><th>Změněno</th><th></th></tr>
-          ${path !== '/' ? `<tr class="click" data-dir=".."><td>⬆ ..</td><td></td><td></td><td></td></tr>` : ''}
-          ${(t.children || []).map((c) => `<tr class="click" data-${c.type === 'dir' ? 'dir' : 'file'}="${esc(c.name)}">
-            <td>${c.type === 'dir' ? '📁' : '📄'} ${esc(c.name)}</td><td>${c.type === 'dir' ? '' : fmtBytes(c.size)}</td><td>${fmtDate(c.modified)}</td>
-            <td class="actions">${c.type === 'file' ? `<button class="btn small" data-get="${esc(c.name)}">⬇</button> ` : ''}<button class="btn small danger" data-rm="${esc(c.name)}">Smazat</button></td></tr>`).join('') || '<tr><td colspan="4" class="muted">prázdný adresář</td></tr>'}
-        </table></div>
-      </div>`);
     const full = (n) => `${path === '/' ? '' : path}/${n}`;
-    $('#repoSel', v).onchange = (e) => { location.hash = `#/files/${enc(e.target.value)}`; };
-    $$('tr[data-dir]', v).forEach((tr) => {
-      tr.onclick = (e) => {
-        if (e.target.closest('button')) return;
-        location.hash = tr.dataset.dir === '..' ? link(parts.length - 1) : `${link(parts.length)}${parts.length ? '/' : ''}${enc(tr.dataset.dir)}`;
-      };
+    const v = setView('Soubory', `
+      <div class="card row" style="padding:10px 14px">
+        <nav class="crumbs" aria-label="Cesta"><a href="${link(0)}">${icon('folder', 16)}${esc(repo)}</a>${parts.map((p, i) => ` <span class="muted">/</span> <a href="${link(i + 1)}">${esc(p)}</a>`).join('')}</nav>
+        <span class="spacer"></span>${path !== '/' ? `<a class="btn small ghost" href="${link(parts.length - 1)}">${icon('up', 15)}Výš</a>` : ''}
+      </div>
+      <div id="t"></div>`, 'folder');
+    const rows = (t.children || []).map((c) => ({ ...c, ext: c.type === 'dir' ? 'adresáře' : (c.name.includes('.') ? c.name.split('.').pop().toLowerCase() : 'bez přípony') }));
+    table('#t', {
+      id: 'files', rows, rowKey: (r) => r.name, placeholder: 'Hledat v adresáři…', sort: { key: 'name', dir: 1 }, group: 'type',
+      groups: [{ key: 'type', label: 'druh', value: (r) => (r.type === 'dir' ? 'adresáře' : 'soubory') }, { key: 'ext', label: 'přípona', value: (r) => r.ext }, { key: 'age', label: 'stáří', value: (r) => age(r.modified) }],
+      empty: 'Prázdný adresář.',
+      toolbar: `${repoSelect(repos, repo)}<label class="btn small">${icon('upload', 15)}Nahrát<input type="file" id="up" multiple class="sr"></label><button type="button" class="btn small" id="mk">${icon('plus', 15)}Adresář</button>`,
+      columns: [
+        { key: 'name', label: 'Název', render: (r) => cellMain(r.type === 'dir' ? 'git' : 'x', r.name, r.type === 'dir' ? 'adresář' : '', r.type === 'dir' ? 'folder' : 'file') },
+        { key: 'size', label: 'Velikost', align: 'right', value: (r) => (r.type === 'dir' ? -1 : r.size), render: (r) => (r.type === 'dir' ? '' : `<span class="mono">${fmtBytes(r.size)}</span>`) },
+        { key: 'modified', label: 'Změněno', value: (r) => r.modified, render: (r) => when(r.modified) },
+        { key: 'act', label: '', sort: false, align: 'right', render: (r) => `${r.type === 'file' ? `${iconBtn(`data-view="${esc(r.name)}"`, 'popout', 'Náhled v okně')}${iconBtn(`data-get="${esc(r.name)}"`, 'download', 'Stáhnout')}` : ''}${iconBtn(`data-rm="${esc(r.name)}"`, 'trash', 'Smazat', 'danger')}` },
+      ],
+      actions: [{ label: 'Smazat vybrané', icon: 'trash', danger: true, run: async (sel) => {
+        if (!(await confirmBox(`Smazat ${sel.length} položek?`))) return;
+        for (const r of sel) await run(() => rr.deleteFile(repo, { path: full(r.name) }));
+        toast(`Smazáno: ${sel.length}`); route();
+      } }],
+      onRow: (r) => {
+        if (r.type === 'dir') location.hash = `${link(parts.length)}${parts.length ? '/' : ''}${enc(r.name)}`;
+        else viewFile(repo, full(r.name));
+      },
+      onRender: (el) => {
+        $$('[data-view]', el).forEach((b) => { b.onclick = () => viewFile(repo, full(b.dataset.view)); });
+        $$('[data-get]', el).forEach((b) => { b.onclick = async () => download(await run(() => rr.readFile(repo, { path: full(b.dataset.get) })), b.dataset.get); });
+        $$('[data-rm]', el).forEach((b) => { b.onclick = async () => { if (await confirmBox(`Smazat ${full(b.dataset.rm)}?`)) { await run(() => rr.deleteFile(repo, { path: full(b.dataset.rm) }), 'Smazáno'); route(); } }; });
+      },
     });
-    $$('tr[data-file]', v).forEach((tr) => { tr.onclick = (e) => { if (!e.target.closest('button')) viewFile(repo, full(tr.dataset.file)); }; });
-    $$('[data-get]', v).forEach((b) => { b.onclick = async () => download(await run(() => rr.readFile(repo, { path: full(b.dataset.get) })), b.dataset.get); });
-    $$('[data-rm]', v).forEach((b) => { b.onclick = async () => { if (await confirmBox(`Smazat ${full(b.dataset.rm)}?`)) { await run(() => rr.deleteFile(repo, { path: full(b.dataset.rm) }), 'Smazáno'); route(); } }; });
+    $('#repoSel', v).onchange = (e) => { location.hash = `#/files/${enc(e.target.value)}`; };
     $('#up', v).onchange = async (e) => {
       for (const f of e.target.files) await run(async () => rr.writeFile(repo, await readFile(f), { path: full(f.name) }), `Nahráno: ${f.name}`);
       route();
@@ -366,94 +684,137 @@ docker pull ${esc(st.registry.replace(/^https?:\/\//, '').replace(/\/$/, ''))}/t
       <div class="row"><span class="spacer"></span><button class="btn" data-close>Zrušit</button><button class="btn primary" id="ok">Vytvořit</button></div>`, (el, close) => {
       $('#ok', el).onclick = async () => { await run(() => rr.mkdir(repo, { path: full($('#dn', el).value) })); close(); route(); };
     });
+    return v;
   };
 
-  async function viewFile(repo, path) {
-    const st = await run(() => rr.stat(repo, { path }));
-    let content = '';
-    const textLike = /\.(json|md|txt|js|ts|css|html|xml|ya?ml|sh|ini|cfg|conf|log|csv|toml)$/i.test(path);
-    if (textLike && st.size < 512 * 1024) {
-      const bytes = await run(() => rr.readFile(repo, { path }));
-      content = new TextDecoder().decode(bytes);
-      if (/\.json$/.test(path)) { try { content = JSON.stringify(JSON.parse(content), null, 2); } catch { /* keep raw */ } }
-    } else content = '(binární nebo velký soubor – použijte stažení)';
-    modal(`<h2>📄 ${esc(path)}</h2><p class="muted small">${fmtBytes(st.size)} · ${fmtDate(st.modified)}</p><pre>${esc(content)}</pre>
-      <div class="row"><span class="spacer"></span><button class="btn" id="dl">⬇ Stáhnout</button><button class="btn" data-close>Zavřít</button></div>`, (el) => {
-      $('#dl', el).onclick = async () => download(await run(() => rr.readFile(repo, { path })), path.split('/').pop());
+  function viewFile(repo, path) {
+    fileWindow(`${repo}:${path}`, async () => {
+      const st = await rr.stat(repo, { path });
+      const bytes = st.size < 5 * 1024 * 1024 ? await rr.readFile(repo, { path }) : new Uint8Array([0]);
+      return { bytes, size: st.size, modified: st.modified };
     });
   }
 
+  // ---------------------------------------------------------------- docker images
   views.images = async (repoName, ...rest) => {
     const repos = (await rr.listRepos()).filter((r) => r.type === 'docker');
-    if (!repos.length) return setView('Docker image', '<div class="card"><p class="muted">Žádný docker repozitář — vytvořte ho v sekci Repozitáře (typ docker).</p></div>');
+    if (!repos.length) return setView('Docker image', '<div class="card"><p class="muted">Žádný docker repozitář – vytvořte ho v sekci Repozitáře (typ docker).</p></div>', 'image');
     const repo = repos.find((r) => r.name === repoName) || repos.find((r) => r.dockerDefault) || repos[0];
     const image = rest.length ? rest.join('/') : '';
     const host = location.host;
     if (image) {
       const tags = await rr.listImageTags(repo.name, image);
-      const v = setView(`🐳 ${image}`, `
-        <div class="row"><a class="btn" href="#/images/${enc(repo.name)}">← Image</a><span class="spacer"></span></div>
-        <div class="card"><pre>docker pull ${esc(host)}/${esc(image)}:${esc(tags[0] ? tags[0].tag : 'latest')}</pre></div>
-        <div class="card table-wrap"><table><tr><th>Tag</th><th>Digest</th><th>Typ</th><th>Velikost</th><th>Vytvořen</th><th></th></tr>
-        ${tags.map((t) => `<tr><td><b>${esc(t.tag)}</b></td><td><code title="${esc(t.digest)}">${esc((t.digest || '').slice(0, 19))}…</code></td><td class="small muted">${esc((t.mediaType || '').replace('application/vnd.', ''))}</td><td>${fmtBytes(t.size)}</td><td>${fmtDate(t.created)}</td>
-          <td class="actions"><button class="btn small danger" data-del="${esc(t.tag)}">Smazat</button></td></tr>`).join('') || '<tr><td colspan="6" class="muted">žádné tagy</td></tr>'}
-        </table></div>`);
-      $$('[data-del]', v).forEach((b) => {
-        b.onclick = async () => {
-          if (!(await confirmBox(`Smazat tag ${image}:${b.dataset.del}? Data uvolní garbage collection.`))) return;
-          await run(() => rr.deleteImageTag(repo.name, image, b.dataset.del), 'Tag smazán');
-          route();
-        };
+      const v = setView(image, `
+        <div class="row"><a class="btn small ghost" href="#/images/${enc(repo.name)}">${icon('up', 15)}Image</a></div>
+        <div class="card"><h2>${icon('terminal', 17)}Stažení</h2><pre>docker pull ${esc(host)}/${esc(image)}:${esc(tags[0] ? tags[0].tag : 'latest')}</pre></div>
+        <div id="t"></div>`, 'image');
+      table('#t', {
+        id: 'imgtags', rows: tags, rowKey: (t) => t.tag, placeholder: 'Hledat tag…', sort: { key: 'created', dir: -1 },
+        groups: [{ key: 'digest', label: 'digest', value: (t) => (t.digest || '').slice(7, 19) }, { key: 'kind', label: 'typ manifestu', value: (t) => (/index|list/.test(t.mediaType || '') ? 'multi-platform' : 'image') }],
+        columns: [
+          { key: 'tag', label: 'Tag', render: (t) => cellMain('docker', t.tag, '', 'tag') },
+          { key: 'digest', label: 'Digest', render: (t) => `<code title="${esc(t.digest)}">${esc((t.digest || '').slice(0, 19))}…</code>` },
+          { key: 'mediaType', label: 'Typ', toggle: true, render: (t) => `<span class="small muted">${esc((t.mediaType || '').replace('application/vnd.', ''))}</span>` },
+          { key: 'size', label: 'Velikost', align: 'right', render: (t) => `<span class="mono">${fmtBytes(t.size)}</span>` },
+          { key: 'created', label: 'Vytvořen', render: (t) => when(t.created) },
+          { key: 'act', label: '', sort: false, align: 'right', render: (t) => iconBtn(`data-del="${esc(t.tag)}"`, 'trash', 'Smazat tag', 'danger') },
+        ],
+        onRender: (el) => {
+          $$('[data-del]', el).forEach((b) => {
+            b.onclick = async () => {
+              if (!(await confirmBox(`Smazat tag ${image}:${b.dataset.del}? Data uvolní garbage collection.`))) return;
+              await run(() => rr.deleteImageTag(repo.name, image, b.dataset.del), 'Tag smazán');
+              route();
+            };
+          });
+        },
       });
       return v;
     }
     const images = await rr.listImages(repo.name);
-    const v = setView('🐳 Docker image', `
-      <div class="row">${repos.length > 1 ? `<select id="dockerRepo">${repos.map((r) => `<option value="${esc(r.name)}"${r.name === repo.name ? ' selected' : ''}>${esc(r.name)}</option>`).join('')}</select>` : `<span class="muted">repozitář <b>${esc(repo.name)}</b> · API <code>${esc(host)}/v2/</code></span>`}
-        <span class="spacer"></span>${me.role === 'admin' ? '<button class="btn" id="gc">🧹 Garbage collection</button>' : ''}</div>
-      <div class="card table-wrap"><table><tr><th>Image</th><th>Tagy</th><th>Velikost (latest)</th><th>Aktualizace</th></tr>
-      ${images.map((i) => `<tr class="click" data-img="${esc(i.name)}"><td><b>${esc(i.name)}</b></td><td>${i.tags}</td><td>${fmtBytes(i.size)}</td><td>${fmtDate(i.updated)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">zatím žádné image — viz Přehled → Docker image</td></tr>'}
-      </table></div>`);
+    const v = setView('Docker image', `<div class="card"><h2>${icon('terminal', 17)}Použití</h2><pre>docker login ${esc(host)}\ndocker push ${esc(host)}/tym/aplikace:1.0</pre></div><div id="t"></div>`, 'image');
+    table('#t', {
+      id: 'images', rows: images, rowKey: (i) => i.name, placeholder: 'Hledat image…', sort: { key: 'updated', dir: -1 },
+      groups: [{ key: 'ns', label: 'jmenný prostor', value: (i) => (i.name.includes('/') ? i.name.split('/')[0] : '(kořen)') }],
+      toolbar: `${repos.length > 1 ? `<label class="dt-select">${icon('repo', 16)}<select id="dockerRepo">${repos.map((r) => `<option value="${esc(r.name)}"${r.name === repo.name ? ' selected' : ''}>${esc(r.name)}</option>`).join('')}</select></label>` : ''}${isAdmin() ? `<button type="button" class="btn small" id="gc">${icon('broom', 15)}Garbage collection</button>` : ''}`,
+      empty: 'Zatím žádné image.',
+      columns: [
+        { key: 'name', label: 'Image', render: (i) => cellMain('docker', i.name, `${esc(host)}/${i.name}`) },
+        { key: 'tags', label: 'Tagů', align: 'right', render: (i) => `<span class="mono">${i.tags}</span>` },
+        { key: 'size', label: 'Velikost (latest)', align: 'right', render: (i) => `<span class="mono">${fmtBytes(i.size)}</span>` },
+        { key: 'updated', label: 'Aktualizace', render: (i) => when(i.updated) },
+      ],
+      onRow: (i) => { location.hash = `#/images/${enc(repo.name)}/${i.name.split('/').map(enc).join('/')}`; },
+    });
     const sel = $('#dockerRepo', v);
     if (sel) sel.onchange = () => { location.hash = `#/images/${enc(sel.value)}`; };
-    $$('tr[data-img]', v).forEach((tr) => { tr.onclick = () => { location.hash = `#/images/${enc(repo.name)}/${tr.dataset.img.split('/').map(enc).join('/')}`; }; });
     const gc = $('#gc', v);
     if (gc) gc.onclick = async () => {
-      const untagged = await confirmBox('Smazat i manifesty bez tagu? (Ne = jen nepoužívaná data)');
+      const untagged = await confirmBox('Smazat i manifesty bez tagu? (Zrušit = jen nepoužívaná data)');
       const r = await run(() => rr.dockerGc(repo.name, { untagged }));
-      if (r) toast(`Uvolněno ${fmtBytes(r.bytes)} — ${r.blobs} blobů, ${r.manifests} manifestů, ${r.uploads} nedokončených uploadů`);
+      if (r) toast(`Uvolněno ${fmtBytes(r.bytes)} – ${r.blobs} blobů, ${r.manifests} manifestů`);
       route();
     };
     return v;
   };
 
-  // ---------------------------------------------------------------- git
-  const gitBase = (repo) => `${serverBase()}${repo.gitDefault ? '/git' : `/r/${repo.name}`}`;
-  const gitHash = (repo, name, params) => `#/git/${enc(repo.name)}/${name.split('/').map(enc).join('/')}${params ? `?${new URLSearchParams(params)}` : ''}`;
+  // ---------------------------------------------------------------- search
+  views.search = async () => {
+    const q = new URLSearchParams(location.hash.split('?')[1] || '').get('q') || '';
+    const res = q ? await rr.search({ q, size: 200 }) : { objects: [], total: 0 };
+    const v = setView('Hledání', `
+      <form class="card row" id="sf" style="padding:12px"><label class="dt-search" style="flex:1">${icon('search', 18)}<span class="sr">Hledat</span><input id="q" type="search" value="${esc(q)}" placeholder="název, popis, keywords:xyz, scope:firma, maintainer:m5ike"></label><button class="btn primary">Hledat</button></form>
+      <div id="t"></div>`, 'search');
+    $('#sf', v).onsubmit = (e) => { e.preventDefault(); location.hash = `#/search?q=${enc($('#q', v).value)}`; };
+    if (!q) { $('#t', v).innerHTML = `<div class="card dt-empty">${icon('search', 28)}<p>Zadejte hledaný výraz. Tip: <kbd>⌘K</kbd> hledá odkudkoli.</p></div>`; return v; }
+    table('#t', {
+      id: 'search', rows: res.objects, rowKey: (o) => `${o.repository}/${o.package.name}`, placeholder: 'Filtrovat výsledky…', sort: { key: 'score', dir: -1 }, group: 'repo',
+      groups: [{ key: 'repo', label: 'repozitář', value: (o) => o.repository }, { key: 'scope', label: 'scope', value: (o) => o.package.scope }],
+      columns: [
+        { key: 'name', label: 'Balíček', value: (o) => o.package.name, render: (o) => cellMain('npm', o.package.name, o.package.description) },
+        { key: 'version', label: 'Verze', value: (o) => o.package.version, render: (o) => `<span class="mono">${esc(o.package.version)}</span>` },
+        { key: 'repo', label: 'Repozitář', value: (o) => o.repository },
+        { key: 'score', label: 'Shoda', align: 'right', value: (o) => o.searchScore, render: (o) => `<span class="meter"><i style="width:${Math.min(100, o.searchScore * 10)}%"></i></span>` },
+      ],
+      onRow: (o) => { location.hash = `#/pkg/${enc(o.repository)}/${enc(o.package.name)}`; },
+    });
+    return v;
+  };
 
+  // ---------------------------------------------------------------- git list
   views.git = async (repoName, ...rest) => {
     const repos = (await rr.listRepos()).filter((r) => r.type === 'git');
-    if (!repos.length) return setView('Git', '<div class="card"><p class="muted">Žádný repozitář typu git – vytvořte ho v sekci Repozitáře (typ git).</p></div>');
+    if (!repos.length) return setView('Git', '<div class="card"><p class="muted">Žádný repozitář typu git – vytvořte ho v sekci Repozitáře (typ git).</p></div>', 'git');
     const repo = repos.find((r) => r.name === repoName) || repos.find((r) => r.gitDefault) || repos[0];
     const name = rest.join('/');
     if (name) return gitDetail(repo, name);
     const list = await rr.listGitRepos(repo.name);
-    const v = setView('🌿 Git repozitáře', `
-      <div class="card row">
-        ${repos.length > 1 ? `<select id="gitRepo">${repos.map((r) => `<option value="${esc(r.name)}"${r.name === repo.name ? ' selected' : ''}>${esc(r.name)}</option>`).join('')}</select>` : `<span class="muted">repozitář <b>${esc(repo.name)}</b></span>`}
-        <span class="spacer"></span>
-        <button class="btn primary" id="new">+ Nový</button><button class="btn" id="imp">⇣ Import / zrcadlo z URL</button><button class="btn" id="gh">GitHub import</button></div>
-      <div class="card"><pre>git clone ${esc(gitBase(repo))}/&lt;název&gt;.git
+    const v = setView('Git repozitáře', `
+      <div class="card"><h2>${icon('terminal', 17)}Klonování a push</h2><pre>git clone ${esc(gitBase(repo))}/&lt;název&gt;.git
 git remote add rr ${esc(gitBase(repo))}/tym/projekt.git
 git push rr main      # ${repo.autoCreate === false ? 'automatické vytvoření je vypnuto' : 'repozitář se při prvním push vytvoří automaticky'}</pre></div>
-      <div class="card table-wrap"><table><tr><th>Název</th><th>Pull zrcadlo</th><th>Push zrcadla</th><th>Popis</th><th>Vytvořeno</th></tr>
-        ${list.map((g) => `<tr class="click" data-g="${esc(g.name)}"><td><b>${esc(g.name)}</b></td>
-          <td>${g.mirror ? `<span class="badge ${g.mirror.status === 'ok' ? 'ok' : g.mirror.status === 'error' ? 'off' : ''}">${esc(g.mirror.status || '')}</span> <span class="small muted">${esc(g.mirror.url)}</span>` : '–'}</td>
-          <td>${g.pushMirrors || '–'}</td><td>${esc(g.description)}</td><td>${fmtDate(g.created)}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">zatím žádné git repozitáře</td></tr>'}
-      </table></div>`);
+      <div id="t"></div>`, 'git');
+    table('#t', {
+      id: 'gitrepos', rows: list, rowKey: (g) => g.name, placeholder: 'Hledat git repozitář…', sort: { key: 'name', dir: 1 },
+      groups: [{ key: 'owner', label: 'vlastník', value: (g) => (g.name.includes('/') ? g.name.split('/')[0] : '(kořen)') }, { key: 'kind', label: 'druh', value: (g) => (g.mirror ? 'zrcadla' : 'vlastní') }],
+      toolbar: `${repos.length > 1 ? `<label class="dt-select">${icon('repo', 16)}<select id="gitRepo">${repos.map((r) => `<option value="${esc(r.name)}"${r.name === repo.name ? ' selected' : ''}>${esc(r.name)}</option>`).join('')}</select></label>` : ''}
+        <button type="button" class="btn small primary" id="new">${icon('plus', 15)}Nový</button><button type="button" class="btn small" id="imp">${icon('download', 15)}Import / zrcadlo</button><button type="button" class="btn small" id="gh">${icon('git', 15)}GitHub import</button>`,
+      empty: 'Zatím žádné git repozitáře – pošlete první push.',
+      columns: [
+        { key: 'name', label: 'Název', render: (g) => cellMain('git', g.name, g.description) },
+        { key: 'mirror', label: 'Pull zrcadlo', value: (g) => (g.mirror ? g.mirror.status : ''), render: (g) => (g.mirror ? `<span class="badge ${g.mirror.status === 'ok' ? 'ok' : g.mirror.status === 'error' ? 'off' : 'blue'}">${esc(g.mirror.status || '')}</span> <span class="small muted">${esc(g.mirror.url)}</span>` : '–') },
+        { key: 'sync', label: 'Synchronizace', toggle: true, value: (g) => (g.mirror ? g.mirror.lastSync : ''), render: (g) => (g.mirror ? when(g.mirror.lastSync) : '–') },
+        { key: 'pushMirrors', label: 'Push zrcadla', align: 'right', render: (g) => (g.pushMirrors ? `<span class="pill">${g.pushMirrors}</span>` : '–') },
+        { key: 'created', label: 'Vytvořeno', toggle: true, render: (g) => when(g.created) },
+      ],
+      onRow: (g) => { location.hash = gitHash(repo, g.name); },
+    });
+    return gitListActions(v, repo);
+  };
+
+  function gitListActions(v, repo) {
     const sel = $('#gitRepo', v);
     if (sel) sel.onchange = () => { location.hash = `#/git/${enc(sel.value)}`; };
-    $$('tr[data-g]', v).forEach((tr) => { tr.onclick = () => { location.hash = gitHash(repo, tr.dataset.g); }; });
     $('#new', v).onclick = () => modal(`<h2>Nový git repozitář</h2><form class="form" id="f">
         <label>Název <input name="name" required placeholder="tym/projekt"></label><label>Výchozí větev <input name="defaultBranch" value="main"></label>
         <label style="grid-column:1/-1">Popis <input name="description"></label></form>
@@ -500,7 +861,12 @@ git push rr main      # ${repo.autoCreate === false ? 'automatické vytvoření 
         route();
       };
     });
-  };
+    return v;
+  }
+
+  // ---------------------------------------------------------------- git
+  const gitBase = (repo) => `${serverBase()}${repo.gitDefault ? '/git' : `/r/${repo.name}`}`;
+  const gitHash = (repo, name, params) => `#/git/${enc(repo.name)}/${name.split('/').map(enc).join('/')}${params ? `?${new URLSearchParams(params)}` : ''}`;
 
   async function gitDetail(repo, name) {
     const q = new URLSearchParams(location.hash.split('?')[1] || '');
@@ -515,11 +881,11 @@ git push rr main      # ${repo.autoCreate === false ? 'automatické vytvoření 
       body = `<div class="card"><p class="muted">Prázdný repozitář. Pošlete první commit:</p><pre>git remote add rr ${esc(info.cloneUrl)}\ngit push rr main</pre></div>`;
     } else if (tab === 'files' || tab === 'file') {
       const parts = path.split('/').filter(Boolean);
-      const crumbs = `<div class="crumbs"><a href="${link({ tab: 'files', path: '' })}">📁 ${esc(name.split('/').pop())}</a>${parts.map((p, i) => ` / <a href="${link({ tab: 'files', path: parts.slice(0, i + 1).join('/') })}">${esc(p)}</a>`).join('')}</div>`;
+      const crumbs = `<div class="crumbs"><a href="${link({ tab: 'files', path: '' })}">${icon('folder', 15)}${esc(name.split('/').pop())}</a>${parts.map((p, i) => ` / <a href="${link({ tab: 'files', path: parts.slice(0, i + 1).join('/') })}">${esc(p)}</a>`).join('')}</div>`;
       if (tab === 'file') {
         const bytes = await rr.gitBlob(repo.name, name, { ref, path });
         const text = bytes.length < 512 * 1024 && !bytes.slice(0, 8000).includes(0) ? new TextDecoder().decode(bytes) : null;
-        body = `<div class="card">${crumbs}<div class="row" style="margin:8px 0"><span class="muted small">${fmtBytes(bytes.length)}</span><span class="spacer"></span><button class="btn small" id="dlf">⬇ Stáhnout</button></div>
+        body = `<div class="card">${crumbs}<div class="row" style="margin:8px 0"><span class="muted small">${fmtBytes(bytes.length)}</span><span class="spacer"></span><button class="btn small" id="dlf">${icon('download', 15)}Stáhnout</button></div>
           <pre>${text === null ? '(binární soubor)' : esc(text)}</pre></div>`;
       } else {
         const t = await rr.gitTree(repo.name, name, { ref, path });
@@ -527,8 +893,8 @@ git push rr main      # ${repo.autoCreate === false ? 'automatické vytvoření 
         let readmeText = '';
         if (readme) readmeText = new TextDecoder().decode(await rr.gitBlob(repo.name, name, { ref, path: readme.path }));
         body = `<div class="card">${crumbs}<div class="table-wrap"><table>
-          ${path ? `<tr class="click" data-up="1"><td>⬆ ..</td><td></td></tr>` : ''}
-          ${t.entries.map((e) => `<tr class="click" data-e="${esc(e.path)}" data-t="${e.type}"><td>${e.type === 'dir' ? '📁' : e.type === 'submodule' ? '🔗' : '📄'} ${esc(e.name)}</td><td>${e.type === 'file' ? fmtBytes(e.size) : ''}</td></tr>`).join('')}
+          ${path ? `<tr class="click" data-up="1"><td>${icon('up', 14)} ..</td><td></td></tr>` : ''}
+          ${t.entries.map((e) => `<tr class="click" data-e="${esc(e.path)}" data-t="${e.type}"><td><span class="cell-main">${tile(e.type === 'dir' ? 'git' : 'x', e.type === 'dir' ? 'folder' : e.type === 'submodule' ? 'link' : 'file')}${esc(e.name)}</span></td><td>${e.type === 'file' ? fmtBytes(e.size) : ''}</td></tr>`).join('')}
           </table></div></div>${readmeText ? `<div class="card"><h2>${esc(readme.name)}</h2><pre>${esc(readmeText)}</pre></div>` : ''}`;
       }
     } else if (tab === 'commits') {
@@ -536,9 +902,9 @@ git push rr main      # ${repo.autoCreate === false ? 'automatické vytvoření 
       body = `<div class="card table-wrap"><table><tr><th>Commit</th><th>Zpráva</th><th>Autor</th><th>Datum</th></tr>
         ${commits.map((c) => `<tr><td><a href="${link({ ref: c.commit, tab: 'files', path: '' })}"><code>${esc(c.short)}</code></a></td><td>${esc(c.subject)}</td><td>${esc(c.author)}</td><td>${fmtDate(c.date)}</td></tr>`).join('')}</table></div>`;
     } else if (tab === 'branches') {
-      const row = (b, kind) => `<tr><td><a href="${link({ ref: b.name, tab: 'files', path: '' })}"><b>${esc(b.name)}</b></a> ${b.name === info.defaultBranch ? '<span class="badge blue">výchozí</span>' : ''}${info.protectedBranches.includes(b.name) ? ' <span class="badge">🔒 chráněná</span>' : ''}</td>
+      const row = (b, kind) => `<tr><td><a href="${link({ ref: b.name, tab: 'files', path: '' })}"><b>${esc(b.name)}</b></a> ${b.name === info.defaultBranch ? '<span class="badge blue">výchozí</span>' : ''}${info.protectedBranches.includes(b.name) ? ` <span class="badge warn">${icon('lock', 12)}chráněná</span>` : ''}</td>
         <td><code>${esc(b.commit.slice(0, 8))}</code></td><td>${esc(b.subject)}</td><td>${fmtDate(b.date)}</td>
-        <td class="actions"><button class="btn small" data-arch="${esc(b.name)}">⬇ tar.gz</button> <button class="btn small" data-zip="${esc(b.name)}">⬇ zip</button>${kind === 'branch' && b.name !== info.defaultBranch ? ` <button class="btn small" data-def="${esc(b.name)}">Výchozí</button>` : ''}</td></tr>`;
+        <td class="actions"><button class="btn small" data-arch="${esc(b.name)}">${icon('download', 14)}tar.gz</button> <button class="btn small" data-zip="${esc(b.name)}">${icon('download', 14)}zip</button>${kind === 'branch' && b.name !== info.defaultBranch ? ` <button class="btn small" data-def="${esc(b.name)}">Výchozí</button>` : ''}</td></tr>`;
       body = `<div class="card table-wrap"><h2>Větve</h2><table>${info.branches.map((b) => row(b, 'branch')).join('')}</table></div>
         <div class="card table-wrap"><h2>Tagy</h2><table>${info.tags.map((b) => row(b, 'tag')).join('') || '<tr><td class="muted">žádné tagy</td></tr>'}</table></div>`;
     } else {
@@ -570,15 +936,15 @@ git push rr main      # ${repo.autoCreate === false ? 'automatické vytvoření 
             <label class="check"><input type="checkbox" name="private" checked> jako privátní</label></form>
           <div class="row" style="margin-top:8px"><button class="btn" id="addPm">+ Přidat push zrcadlo</button>${info.pushMirrors.length ? '<button class="btn" id="push">⇡ Odeslat teď</button>' : ''}</div></div>`;
     }
-    const v = setView(`🌿 ${name}`, `
+    const v = setView(name, `
       <div class="row"><a href="#/git/${enc(repo.name)}">← git repozitáře</a></div>
       <div class="card"><div class="row"><h2 style="margin:0">${esc(name)}</h2>${info.mirror ? '<span class="badge blue">zrcadlo</span>' : ''}<span class="spacer"></span>
         <select id="ref">${[...info.branches.map((b) => b.name), ...info.tags.map((t) => t.name)].map((x) => `<option${x === ref ? ' selected' : ''}>${esc(x)}</option>`).join('')}${[...info.branches, ...info.tags].some((x) => x.name === ref) ? '' : `<option selected>${esc(ref)}</option>`}</select></div>
         <p class="muted">${esc(info.description)}</p>
         <div class="row"><code style="flex:1;min-width:0;overflow:auto">git clone ${esc(info.cloneUrl)}</code><button class="btn small" id="copy">Kopírovat</button>
-          <button class="btn small" id="tgz">⬇ tar.gz</button><button class="btn small" id="zip">⬇ zip</button><span class="muted small">${fmtBytes(info.size)}</span></div></div>
+          <button class="btn small" id="tgz">${icon('download', 14)}tar.gz</button><button class="btn small" id="zip">${icon('download', 14)}zip</button><span class="muted small">${fmtBytes(info.size)}</span></div></div>
       <div class="tabs">${tabs.map(([k, l]) => `<button data-tab="${k}" class="${(tab === k || (tab === 'file' && k === 'files')) ? 'active' : ''}">${l}</button>`).join('')}</div>
-      ${body}`);
+      ${body}`, 'git');
     const archive = async (r, format) => download(await run(() => rr.gitArchive(repo.name, name, { ref: r, format })), `${name.split('/').pop()}-${r}.${format}`);
     $$('[data-tab]', v).forEach((b) => { b.onclick = () => { location.hash = link({ tab: b.dataset.tab }); }; });
     $('#ref', v).onchange = (e) => { location.hash = link({ ref: e.target.value, path: tab === 'file' ? '' : path, tab: tab === 'file' ? 'files' : tab }); };
@@ -617,26 +983,333 @@ git push rr main      # ${repo.autoCreate === false ? 'automatické vytvoření 
 
   // ---------------------------------------------------------------- webhooks & events
   views.webhooks = async () => {
-    const [hooks, ev, dels] = await Promise.all([rr.listWebhooks(), rr.listEvents({ limit: 30 }), rr.listWebhookDeliveries({ limit: 30 })]);
-    const v = setView('🔔 Webhooky a události', `
-      <div class="card"><p class="muted" style="margin-top:0">Webhooky posílají události registru (publikace, push, upload, mazání, synchronizace zrcadel, selhání replikace…) na zadané URL.
-        Tělo je podepsané hlavičkou <code>X-RR-Signature-256: sha256=HMAC(secret, body)</code>; formáty JSON, Slack/Mattermost a Discord.</p>
-        <button class="btn primary" id="new">+ Nový webhook</button></div>
-      <div class="card table-wrap"><table><tr><th>Zap.</th><th>Název</th><th>Události</th><th>Repozitáře</th><th>URL</th><th>Formát</th><th>Poslední doručení</th><th></th></tr>
-        ${hooks.map((h) => `<tr><td><input type="checkbox" data-toggle="${esc(h.id)}" ${h.enabled ? 'checked' : ''}></td><td><b>${esc(h.name)}</b></td><td>${h.events.map((e) => `<span class="badge">${esc(e)}</span>`).join(' ')}</td>
-          <td>${esc(h.repos.join(', '))}</td><td><code>${esc(h.url)}</code></td><td>${esc(h.format)}</td>
-          <td>${h.lastDelivery ? `<span class="badge ${h.lastDelivery.ok ? 'ok' : 'off'}">${h.lastDelivery.status}</span> ${fmtDate(h.lastDelivery.time)}` : '–'}</td>
-          <td class="actions"><button class="btn small" data-test="${esc(h.id)}">Test</button> <button class="btn small" data-edit="${esc(h.id)}">Upravit</button> <button class="btn small danger" data-del="${esc(h.id)}">Smazat</button></td></tr>`).join('') || '<tr><td colspan="8" class="muted">žádné webhooky</td></tr>'}
-      </table></div>
-      <div class="card table-wrap"><h2>Doručení</h2><table><tr><th>Čas</th><th>Webhook</th><th>Událost</th><th>Stav</th><th>Pokus</th><th>ms</th><th>Chyba / odpověď</th></tr>
-        ${dels.map((d) => `<tr><td>${fmtDate(d.time)}</td><td>${esc(d.hook)}</td><td>${esc(d.event)}</td><td><span class="badge ${d.ok ? 'ok' : 'off'}">${d.status}</span></td><td>${d.attempt}</td><td>${d.ms}</td><td class="small">${esc(d.error || d.response || '')}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">zatím nic</td></tr>'}</table></div>
-      <div class="card table-wrap"><h2>Poslední události</h2><table><tr><th>Čas</th><th>Událost</th><th>Repozitář</th><th>Uživatel</th><th>Detail</th></tr>
-        ${ev.events.map((e) => `<tr><td>${fmtDate(e.time)}</td><td><span class="badge blue">${esc(e.type)}</span></td><td>${esc(e.repo || '')}</td><td>${esc(e.user)}</td><td class="small"><code>${esc(JSON.stringify(e.data).slice(0, 160))}</code></td></tr>`).join('') || '<tr><td colspan="5" class="muted">zatím nic</td></tr>'}</table></div>`);
-    $('#new', v).onclick = () => hookForm(null, ev.types);
-    $$('[data-edit]', v).forEach((b) => { b.onclick = () => hookForm(hooks.find((h) => h.id === b.dataset.edit), ev.types); });
-    $$('[data-del]', v).forEach((b) => { b.onclick = async () => { if (await confirmBox('Smazat webhook?')) { await run(() => rr.deleteWebhook(b.dataset.del), 'Smazáno'); route(); } }; });
-    $$('[data-toggle]', v).forEach((c) => { c.onchange = () => run(() => rr.updateWebhook(c.dataset.toggle, { enabled: c.checked }), c.checked ? 'Zapnuto' : 'Vypnuto'); });
-    $$('[data-test]', v).forEach((b) => { b.onclick = async () => { const r = await run(() => rr.testWebhook(b.dataset.test)); toast(r.ok ? `OK (HTTP ${r.status}, ${r.ms} ms)` : `Chyba: ${r.error || `HTTP ${r.status}`}`, !r.ok); route(); }; });
+    const [hooks, ev, dels] = await Promise.all([rr.listWebhooks(), rr.listEvents({ limit: 200 }), rr.listWebhookDeliveries({ limit: 200 })]);
+    const v = setView('Webhooky a události', `
+      <div class="card"><p class="muted" style="margin:0">Webhooky posílají události registru (publikace, push, upload, mazání, synchronizace zrcadel, selhání replikace…) na zadané URL.
+        Tělo je podepsané hlavičkou <code>X-RR-Signature-256: sha256=HMAC(secret, body)</code>; formáty JSON, Slack/Mattermost a Discord.</p></div>
+      <div id="th"></div>
+      <div class="tabs" id="evTabs"><button type="button" data-t="del" class="active">Doručení (${dels.length})</button><button type="button" data-t="ev">Události (${ev.events.length})</button></div>
+      <div id="tl"></div>`, 'bell');
+    table('#th', {
+      id: 'webhooks', rows: hooks, rowKey: (h) => h.id, placeholder: 'Hledat webhook…', sort: { key: 'name', dir: 1 },
+      toolbar: `<button type="button" class="btn small primary" id="new">${icon('plus', 15)}Nový webhook</button>`,
+      empty: 'Žádné webhooky.',
+      columns: [
+        { key: 'enabled', label: 'Zap.', value: (h) => (h.enabled ? 1 : 0), render: (h) => `<input type="checkbox" data-toggle="${esc(h.id)}" aria-label="Zapnuto"${h.enabled ? ' checked' : ''}>` },
+        { key: 'name', label: 'Název', render: (h) => cellMain('docker', h.name, h.url, 'bell') },
+        { key: 'events', label: 'Události', value: (h) => h.events.join(','), render: (h) => h.events.map((e) => `<span class="badge plain">${esc(e)}</span>`).join(' ') },
+        { key: 'repos', label: 'Repozitáře', toggle: true, value: (h) => h.repos.join(', ') },
+        { key: 'format', label: 'Formát', toggle: true },
+        { key: 'last', label: 'Poslední doručení', value: (h) => (h.lastDelivery ? h.lastDelivery.time : ''), render: (h) => (h.lastDelivery ? `<span class="badge ${h.lastDelivery.ok ? 'ok' : 'off'}">${h.lastDelivery.status}</span> ${when(h.lastDelivery.time)}` : '–') },
+        { key: 'act', label: '', sort: false, align: 'right', render: (h) => `${iconBtn(`data-test="${esc(h.id)}"`, 'play', 'Odeslat test')}${iconBtn(`data-edit="${esc(h.id)}"`, 'edit', 'Upravit')}${iconBtn(`data-del="${esc(h.id)}"`, 'trash', 'Smazat', 'danger')}` },
+      ],
+      onRender: (el) => {
+        const n = $('#new', el);
+        if (n) n.onclick = () => hookForm(null, ev.types);
+        $$('[data-edit]', el).forEach((b) => { b.onclick = () => hookForm(hooks.find((h) => h.id === b.dataset.edit), ev.types); });
+        $$('[data-del]', el).forEach((b) => { b.onclick = async () => { if (await confirmBox('Smazat webhook?')) { await run(() => rr.deleteWebhook(b.dataset.del), 'Smazáno'); route(); } }; });
+        $$('[data-toggle]', el).forEach((c) => { c.onchange = () => run(() => rr.updateWebhook(c.dataset.toggle, { enabled: c.checked }), c.checked ? 'Zapnuto' : 'Vypnuto'); });
+        $$('[data-test]', el).forEach((b) => { b.onclick = async () => { const r = await run(() => rr.testWebhook(b.dataset.test)); toast(r.ok ? `OK (HTTP ${r.status}, ${r.ms} ms)` : `Chyba: ${r.error || `HTTP ${r.status}`}`, !r.ok); }; });
+      },
+    });
+    const showTab = (t) => {
+      $$('#evTabs button', v).forEach((b) => b.classList.toggle('active', b.dataset.t === t));
+      if (t === 'del') {
+        table('#tl', {
+          id: 'deliveries', rows: dels, rowKey: (d) => d.id, placeholder: 'Hledat v doručeních…', sort: { key: 'time', dir: -1 }, group: '',
+          groups: [{ key: 'hook', label: 'webhook', value: (d) => d.hook }, { key: 'ok', label: 'výsledek', value: (d) => (d.ok ? 'úspěch' : 'chyba') }, { key: 'event', label: 'událost', value: (d) => d.event }],
+          empty: 'Zatím nic nedoručeno.',
+          columns: [
+            { key: 'time', label: 'Čas', render: (d) => when(d.time) },
+            { key: 'hook', label: 'Webhook' },
+            { key: 'event', label: 'Událost', render: (d) => `<span class="badge blue">${esc(d.event)}</span>` },
+            { key: 'status', label: 'Stav', render: (d) => `<span class="badge ${d.ok ? 'ok' : 'off'}">${d.status}</span>` },
+            { key: 'attempt', label: 'Pokus', align: 'right' },
+            { key: 'ms', label: 'ms', align: 'right', render: (d) => `<span class="mono">${d.ms}</span>` },
+            { key: 'error', label: 'Chyba / odpověď', toggle: true, value: (d) => d.error || d.response || '', render: (d) => `<span class="small">${esc(d.error || d.response || '')}</span>` },
+          ],
+        });
+      } else {
+        table('#tl', {
+          id: 'events', rows: ev.events, rowKey: (e) => e.id, placeholder: 'Hledat v událostech…', sort: { key: 'time', dir: -1 },
+          groups: [{ key: 'type', label: 'typ', value: (e) => e.type }, { key: 'repo', label: 'repozitář', value: (e) => e.repo || '–' }, { key: 'user', label: 'uživatel', value: (e) => e.user }],
+          search: (e) => `${e.type} ${e.repo} ${e.user} ${JSON.stringify(e.data)}`,
+          empty: 'Zatím žádné události.',
+          columns: [
+            { key: 'time', label: 'Čas', render: (e) => when(e.time) },
+            { key: 'type', label: 'Událost', render: (e) => `<span class="badge blue">${esc(e.type)}</span>` },
+            { key: 'repo', label: 'Repozitář', value: (e) => e.repo || '' },
+            { key: 'user', label: 'Uživatel' },
+            { key: 'data', label: 'Detail', sort: false, render: (e) => `<code class="small">${esc(JSON.stringify(e.data).slice(0, 140))}</code>` },
+          ],
+        });
+      }
+    };
+    $$('#evTabs button', v).forEach((b) => { b.onclick = () => showTab(b.dataset.t); });
+    showTab('del');
+    return v;
+  };
+
+  // ---------------------------------------------------------------- tasks & replication
+  views.jobs = async () => {
+    const [tasks, jobs] = await Promise.all([rr.listTasks(), rr.listReplications({ limit: 300 })]);
+    const v = setView('Úlohy a replikace', '<div id="tt"></div><div class="card" style="padding:12px 18px"><h2 style="margin:0">' + icon('route', 17) + 'Replikace (směrovací pravidla „push“)</h2></div><div id="tr"></div>', 'clock');
+    table('#tt', {
+      id: 'tasks', rows: tasks, rowKey: (t) => t.id, placeholder: 'Hledat úlohu…', sort: { key: 'nextRun', dir: 1 },
+      columns: [
+        { key: 'name', label: 'Úloha', render: (t) => cellMain(t.lastError ? 'x' : 'git', t.name, t.description, t.lastError ? 'alert' : 'clock') },
+        { key: 'intervalSec', label: 'Interval', align: 'right', render: (t) => `<span class="mono">${t.intervalSec >= 3600 ? `${t.intervalSec / 3600} h` : `${t.intervalSec} s`}</span>` },
+        { key: 'lastRun', label: 'Poslední běh', render: (t) => when(t.lastRun) },
+        { key: 'nextRun', label: 'Další běh', render: (t) => when(t.nextRun) },
+        { key: 'result', label: 'Výsledek', sort: false, toggle: true, render: (t) => (t.running ? '<span class="badge blue">běží</span>' : t.lastError ? `<span class="error small">${esc(t.lastError)}</span>` : t.lastResult ? `<code class="small">${esc(JSON.stringify(t.lastResult).slice(0, 100))}</code>` : '–') },
+        { key: 'act', label: '', sort: false, align: 'right', render: (t) => `<button type="button" class="btn small" data-run="${esc(t.id)}">${icon('play', 14)}Spustit</button>` },
+      ],
+      onRender: (el) => { $$('[data-run]', el).forEach((b) => { b.onclick = async () => { await run(() => rr.runTask(b.dataset.run), 'Úloha dokončena'); route(); }; }); },
+    });
+    table('#tr', {
+      id: 'replications', rows: jobs, rowKey: (j) => j.id, placeholder: 'Hledat replikaci…', sort: { key: 'created', dir: -1 }, group: 'status',
+      groups: [{ key: 'status', label: 'stav', value: (j) => j.status }, { key: 'rule', label: 'pravidlo', value: (j) => j.ruleName }, { key: 'repo', label: 'repozitář', value: (j) => j.repo }],
+      empty: 'Zatím žádné replikace – vytvořte směrovací pravidlo s „push“.',
+      columns: [
+        { key: 'created', label: 'Vytvořeno', render: (j) => when(j.created) },
+        { key: 'status', label: 'Stav', render: (j) => `<span class="badge ${j.status === 'ok' ? 'ok' : j.status === 'error' ? 'off' : j.status === 'skipped' ? 'plain' : 'blue'}">${esc(j.status)}</span>` },
+        { key: 'ruleName', label: 'Pravidlo' },
+        { key: 'event', label: 'Událost', toggle: true },
+        { key: 'item', label: 'Položka', value: (j) => `${j.repo}/${j.item}`, render: (j) => `<code>${esc(j.repo)}/${esc(j.item)}</code>` },
+        { key: 'target', label: 'Cíl', toggle: true, render: (j) => `<code class="small">${esc(j.target)}</code>` },
+        { key: 'attempts', label: 'Pokusy', align: 'right' },
+        { key: 'error', label: 'Chyba', toggle: true, value: (j) => j.error || '', render: (j) => `<span class="error small">${esc(j.error || '')}</span>` },
+        { key: 'act', label: '', sort: false, align: 'right', render: (j) => (j.status === 'error' || j.status === 'ok' ? iconBtn(`data-retry="${esc(j.id)}"`, 'refresh', 'Spustit znovu') : '') },
+      ],
+      actions: [{ label: 'Spustit znovu', icon: 'refresh', run: async (sel) => { for (const j of sel) await run(() => rr.retryReplication(j.id)); toast(`Zařazeno: ${sel.length}`); setTimeout(route, 800); } }],
+      onRender: (el) => { $$('[data-retry]', el).forEach((b) => { b.onclick = async () => { await run(() => rr.retryReplication(b.dataset.retry), 'Zařazeno'); setTimeout(route, 800); }; }); },
+    });
+    return v;
+  };
+
+  // ---------------------------------------------------------------- routing rules
+  views.routes = async () => {
+    const [rules, repos] = await Promise.all([rr.listRoutes(), rr.listRepos()]);
+    const v = setView('Směrování', `
+      <div class="card"><p class="muted" style="margin:0">Routing plugin přesměrovává požadavky na jiné registry dle masky URL / části URL / klíče
+        (<code>/~klic/…</code>, hlavička <code>X-RR-Key</code> nebo <code>?rr_key=</code>), hlavičky nebo pokud položka lokálně neexistuje.
+        Pravidla <b>push</b> replikují publikace na vzdálené servery, u gitu „vždy/nenalezeno“ automaticky klonuje.</p></div>
+      <div id="t"></div>
+      <div class="card"><h2>${icon('play', 17)}Test směrování</h2>
+        <div class="form">
+          <label>Cesta <input id="tPath" value="/@firma/utils" placeholder="/lodash nebo /@scope/name"></label>
+          <label>Repozitář <select id="tRepo">${repos.map((r) => `<option${r.default ? ' selected' : ''}>${esc(r.name)}</option>`).join('')}</select></label>
+          <label>Klíč <input id="tKey"></label>
+          <label>Metoda <select id="tMethod"><option>GET</option><option>HEAD</option><option>POST</option><option>PUT</option></select></label>
+        </div>
+        <div class="row" style="margin-top:12px"><button class="btn primary" id="test">${icon('play', 15)}Otestovat</button></div>
+        <div id="tOut"></div>
+      </div>`, 'route');
+    table('#t', {
+      id: 'routes', rows: rules, rowKey: (r) => r.id, placeholder: 'Hledat pravidlo, cíl, masku…', sort: { key: 'priority', dir: 1 },
+      groups: [{ key: 'when', label: 'fáze', value: (r) => r.when }, { key: 'repo', label: 'repozitář', value: (r) => r.repo }, { key: 'host', label: 'cílový server', value: (r) => { try { return new URL(r.target).host; } catch { return r.target; } } }],
+      toolbar: `<button type="button" class="btn small primary" id="newRule">${icon('plus', 15)}Nové pravidlo</button>`,
+      empty: 'Žádná pravidla.',
+      columns: [
+        { key: 'enabled', label: 'Zap.', value: (r) => (r.enabled ? 1 : 0), render: (r) => `<input type="checkbox" data-toggle="${esc(r.id)}" aria-label="Zapnuto"${r.enabled ? ' checked' : ''}>` },
+        { key: 'priority', label: 'Prio', align: 'right', render: (r) => `<span class="mono">${r.priority}</span>` },
+        { key: 'name', label: 'Pravidlo', render: (r) => cellMain(r.when === 'push' ? 'git' : r.when === 'always' ? 'docker' : 'npm', r.name, r.description, r.when === 'push' ? 'upload' : 'route') },
+        { key: 'when', label: 'Kdy', render: (r) => `<span class="badge ${r.when === 'always' ? 'blue' : r.when === 'push' ? 'ok' : 'plain'}">${r.when === 'always' ? 'vždy' : r.when === 'push' ? 'push' : 'nenalezeno'}</span>` },
+        { key: 'pattern', label: 'Maska', value: (r) => `${r.matchOn}/${r.matchType}: ${r.pattern || '*'}`, render: (r) => `<code>${esc(r.matchType)}: ${esc(r.pattern || '*')}</code>${r.header ? `<div class="small muted">hlavička ${esc(r.header.name)}</div>` : ''}` },
+        { key: 'repo', label: 'Repo', toggle: true, value: (r) => `${r.repo}${r.repoType !== '*' ? ` (${r.repoType})` : ''}` },
+        { key: 'key', label: 'Klíč', toggle: true, value: (r) => r.key || '–' },
+        { key: 'target', label: 'Cíl', render: (r) => `<code class="small">${esc(r.target)}</code>` },
+        { key: 'cacheTtl', label: 'Cache', toggle: true, align: 'right', value: (r) => (r.cacheTtl == null ? -1 : r.cacheTtl), render: (r) => (r.cacheTtl == null ? '<span class="muted">výchozí</span>' : `<span class="mono">${r.cacheTtl} s</span>`) },
+        { key: 'act', label: '', sort: false, align: 'right', render: (r) => `${iconBtn(`data-edit="${esc(r.id)}"`, 'edit', 'Upravit')}${iconBtn(`data-del="${esc(r.id)}"`, 'trash', 'Smazat', 'danger')}` },
+      ],
+      onRow: (r) => ruleForm(r, repos),
+      onRender: (el) => {
+        $('#newRule', el).onclick = () => ruleForm(null, repos);
+        $$('[data-edit]', el).forEach((b) => { b.onclick = () => ruleForm(rules.find((r) => r.id === b.dataset.edit), repos); });
+        $$('[data-del]', el).forEach((b) => { b.onclick = async () => { if (await confirmBox('Smazat pravidlo?')) { await run(() => rr.deleteRoute(b.dataset.del), 'Smazáno'); route(); } }; });
+        $$('[data-toggle]', el).forEach((c) => { c.onchange = () => run(() => rr.updateRoute(c.dataset.toggle, { enabled: c.checked }), c.checked ? 'Zapnuto' : 'Vypnuto'); });
+      },
+    });
+    $('#test', v).onclick = async () => {
+      const r = await run(() => rr.testRoute({ path: $('#tPath', v).value, repo: $('#tRepo', v).value, key: $('#tKey', v).value, method: $('#tMethod', v).value }));
+      $('#tOut', v).innerHTML = `<p>Balíček: <code>${esc(r.request.packagePath || '–')}</code> · vždy: <b>${esc(r.always ? r.always.name : '–')}</b> · při nenalezení: <b>${esc(r.notfound ? r.notfound.name : '–')}</b></p><div id="tOutT"></div>`;
+      table('#tOutT', {
+        id: 'routetest', rows: r.rules, rowKey: (x) => x.id, placeholder: 'Filtrovat…', sort: { key: 'priority', dir: 1 },
+        columns: [
+          { key: 'matched', label: 'Shoda', value: (x) => (x.matched ? 0 : 1), render: (x) => (x.matched ? `<span class="badge ok">ano</span>` : `<span class="badge off">ne</span>`) },
+          { key: 'priority', label: 'Prio', align: 'right' },
+          { key: 'name', label: 'Pravidlo' },
+          { key: 'when', label: 'Kdy' },
+          { key: 'target', label: 'Cílová URL', render: (x) => `<code class="small">${esc(x.target)}</code>` },
+        ],
+      });
+    };
+    return v;
+  };
+
+  // ---------------------------------------------------------------- cache
+  views.cache = async () => {
+    const [s, list] = await Promise.all([rr.cacheStats(), rr.listCache({ limit: 2000 })]);
+    const rate = s.hits + s.misses ? s.hits / (s.hits + s.misses) : 0;
+    const v = setView('Cache', `
+      <div class="kpis">
+        <article class="kpi"><div class="kpi-top"><span class="tile git">${icon('cache', 18)}</span>Položek</div><div class="kpi-v">${fmtNum(s.entries)}</div><div class="kpi-d">expirovaných ${fmtNum(s.expired)}</div></article>
+        <article class="kpi"><div class="kpi-top"><span class="tile npm">${icon('repo', 18)}</span>Velikost</div><div class="kpi-v">${fmtBytes(s.bytes)}</div><div class="kpi-d">${esc(s.dir)}</div></article>
+        <article class="kpi"><div class="kpi-top"><span class="tile docker">${icon('activity', 18)}</span>Hit / miss</div><div class="kpi-v">${Math.round(rate * 100)} %</div><div class="kpi-d">${fmtNum(s.hits)} / ${fmtNum(s.misses)} · stale ${s.stale} · chyby ${s.errors}</div></article>
+      </div>
+      <div id="t"></div>`, 'cache');
+    const host = (e) => { try { return new URL(e.url).host; } catch { return '?'; } };
+    table('#t', {
+      id: 'cache', rows: list.entries, rowKey: (e) => e.key, placeholder: 'Hledat URL…', sort: { key: 'created', dir: -1 },
+      groups: [{ key: 'host', label: 'server', value: host }, { key: 'expired', label: 'platnost', value: (e) => (e.expired ? 'expirované' : 'platné') }, { key: 'rule', label: 'pravidlo', value: (e) => e.ruleId || '–' }],
+      toolbar: `<button type="button" class="btn small" id="pExp">${icon('broom', 15)}Smazat expirované</button><button type="button" class="btn small danger" id="pAll">${icon('trash', 15)}Smazat vše</button>`,
+      empty: 'Cache je prázdná.',
+      columns: [
+        { key: 'url', label: 'URL', render: (e) => `<code class="small">${esc(e.url)}</code>` },
+        { key: 'status', label: 'Status', align: 'right', render: (e) => `<span class="mono">${e.status}</span>` },
+        { key: 'size', label: 'Velikost', align: 'right', render: (e) => `<span class="mono">${fmtBytes(e.size)}</span>` },
+        { key: 'created', label: 'Uloženo', render: (e) => when(e.created) },
+        { key: 'expires', label: 'Expirace', render: (e) => (e.expired ? '<span class="badge off">expirováno</span>' : when(e.expires)) },
+        { key: 'act', label: '', sort: false, align: 'right', render: (e) => iconBtn(`data-del="${esc(e.key)}"`, 'x', 'Smazat položku', 'danger') },
+      ],
+      actions: [{ label: 'Smazat vybrané', icon: 'trash', danger: true, run: async (sel) => { for (const e of sel) await run(() => rr.deleteCacheEntry(e.key)); toast(`Smazáno: ${sel.length}`); route(); } }],
+      onRender: (el) => {
+        $$('[data-del]', el).forEach((b) => { b.onclick = async () => { await run(() => rr.deleteCacheEntry(b.dataset.del)); route(); }; });
+        $('#pExp', el).onclick = async () => { const r = await run(() => rr.purgeCache({ expired: 1 })); toast(`Smazáno expirovaných: ${r.removed}`); route(); };
+        $('#pAll', el).onclick = async () => { if (await confirmBox('Smazat celou cache?')) { const r = await run(() => rr.purgeCache({})); toast(`Smazáno: ${r.removed}`); route(); } };
+      },
+    });
+    return v;
+  };
+
+  // ---------------------------------------------------------------- users & tokens
+  views.users = async () => {
+    const users = await rr.listUsers();
+    const roles = ['publisher', 'reader', 'admin'];
+    const v = setView('Uživatelé', `<div id="t"></div><p class="muted small">Role: <b>reader</b> – čtení, <b>publisher</b> – čtení a publikace, <b>admin</b> – vše. Uživatelé se mohou přihlásit i přes <code>npm login --auth-type=legacy</code>; přístup k jednotlivým repozitářům upravují ACL repozitáře.</p>`, 'users');
+    table('#t', {
+      id: 'users', rows: users, rowKey: (u) => u.name, placeholder: 'Hledat uživatele…', sort: { key: 'name', dir: 1 }, group: 'role',
+      groups: [{ key: 'role', label: 'role', value: (u) => u.role }],
+      toolbar: `<button type="button" class="btn small primary" id="new">${icon('plus', 15)}Nový uživatel</button>`,
+      columns: [
+        { key: 'name', label: 'Jméno', render: (u) => `<div class="cell-main"><span class="avatar">${esc(u.name.slice(0, 2))}</span><div class="t"><b>${esc(u.name)}</b><small>${esc(u.email || '')}</small></div>${u.builtin ? '<span class="badge blue">vestavěný</span>' : ''}</div>` },
+        { key: 'role', label: 'Role', render: (u) => (u.builtin ? '<span class="pill">admin</span>' : `<select data-role="${esc(u.name)}" style="width:auto;min-height:32px;padding:4px 8px">${roles.map((r) => `<option${r === u.role ? ' selected' : ''}>${r}</option>`).join('')}</select>`) },
+        { key: 'created', label: 'Vytvořen', render: (u) => when(u.created) },
+        { key: 'act', label: '', sort: false, align: 'right', render: (u) => (u.builtin ? '' : `${iconBtn(`data-pw="${esc(u.name)}"`, 'key', 'Změnit heslo')}${iconBtn(`data-del="${esc(u.name)}"`, 'trash', 'Smazat', 'danger')}`) },
+      ],
+      onRender: (el) => {
+        $('#new', el).onclick = () => modal(`<h2>Nový uživatel</h2><form class="form" id="f">
+            <label>Jméno <input name="name" required></label><label>Heslo <input name="password" type="password" required></label>
+            <label>E-mail <input name="email"></label><label>Role <select name="role">${roles.map((r) => `<option>${r}</option>`).join('')}</select></label></form>
+            <div class="row"><span class="spacer"></span><button class="btn" data-close>Zrušit</button><button class="btn primary" id="ok">Vytvořit</button></div>`, (m, close) => {
+          $('#ok', m).onclick = async () => { await run(() => rr.createUser(formData($('#f', m))), 'Uživatel vytvořen'); close(); route(); };
+        });
+        $$('[data-role]', el).forEach((s) => { s.onchange = () => run(() => rr.updateUser(s.dataset.role, { role: s.value }), 'Role změněna'); });
+        $$('[data-pw]', el).forEach((b) => {
+          b.onclick = () => modal(`<h2>Heslo pro ${esc(b.dataset.pw)}</h2><label>Nové heslo <input type="password" id="pw"></label>
+            <div class="row"><span class="spacer"></span><button class="btn" data-close>Zrušit</button><button class="btn primary" id="ok">Uložit</button></div>`, (m, close) => {
+            $('#ok', m).onclick = async () => { await run(() => rr.updateUser(b.dataset.pw, { password: $('#pw', m).value }), 'Heslo změněno'); close(); };
+          });
+        });
+        $$('[data-del]', el).forEach((b) => { b.onclick = async () => { if (await confirmBox(`Smazat uživatele ${b.dataset.del}?`)) { await run(() => rr.deleteUser(b.dataset.del), 'Smazáno'); route(); } }; });
+      },
+    });
+    return v;
+  };
+
+  views.tokens = async () => {
+    const [tokens, users] = await Promise.all([rr.listTokens(), isAdmin() ? rr.listUsers() : []]);
+    const v = setView('Tokeny', '<div id="t"></div><p class="muted small">Hlavní API token (RR_API_TOKEN) se nastavuje v <code>make menuconfig</code> a zde se nezobrazuje.</p>', 'key');
+    table('#t', {
+      id: 'tokens', rows: tokens, rowKey: (t) => t.id, placeholder: 'Hledat token…', sort: { key: 'created', dir: -1 },
+      groups: [{ key: 'user', label: 'uživatel', value: (t) => t.user }, { key: 'kind', label: 'druh', value: (t) => t.kind }],
+      toolbar: `<button type="button" class="btn small primary" id="new">${icon('plus', 15)}Nový token</button>`,
+      empty: 'Žádné tokeny.',
+      columns: [
+        { key: 'name', label: 'Token', render: (t) => cellMain('npm', t.name, t.preview, 'key') },
+        { key: 'user', label: 'Uživatel' },
+        { key: 'kind', label: 'Druh', toggle: true, render: (t) => `<span class="pill">${esc(t.kind)}</span>` },
+        { key: 'readonly', label: 'Jen čtení', value: (t) => (t.readonly ? 1 : 0), render: (t) => yes(t.readonly) },
+        { key: 'created', label: 'Vytvořen', render: (t) => when(t.created) },
+        { key: 'lastUsed', label: 'Použit', render: (t) => when(t.lastUsed) },
+        { key: 'expires', label: 'Expirace', toggle: true, render: (t) => (t.expires ? when(t.expires) : 'nikdy') },
+        { key: 'act', label: '', sort: false, align: 'right', render: (t) => iconBtn(`data-del="${esc(t.id)}"`, 'trash', 'Zneplatnit', 'danger') },
+      ],
+      actions: [{ label: 'Zneplatnit vybrané', icon: 'trash', danger: true, run: async (sel) => { if (!(await confirmBox(`Zneplatnit ${sel.length} tokenů?`))) return; for (const t of sel) await run(() => rr.revokeToken(t.id)); toast(`Zneplatněno: ${sel.length}`); route(); } }],
+      onRender: (el) => {
+        $('#new', el).onclick = () => modal(`<h2>Nový token</h2><form class="form" id="f">
+            <label>Název <input name="name" value="ci"></label>
+            ${isAdmin() ? `<label>Pro uživatele <select name="user"><option value="">(já – ${esc(me.name)})</option>${users.filter((u) => !u.builtin).map((u) => `<option>${esc(u.name)}</option>`).join('')}</select></label>` : ''}
+            <label>Platnost v sekundách (0 = navždy) <input name="ttl" type="number" value="0"></label>
+            <label class="check"><input type="checkbox" name="readonly"> jen pro čtení</label></form>
+            <div class="row"><span class="spacer"></span><button class="btn" data-close>Zrušit</button><button class="btn primary" id="ok">Vytvořit</button></div>`, (m, close) => {
+          $('#ok', m).onclick = async () => {
+            const t = await run(() => rr.createToken(formData($('#f', m))));
+            close();
+            modal(`<h2>Token vytvořen</h2><p style="margin:0">Uložte si ho – znovu se nezobrazí.</p><pre>${esc(t.token)}</pre>
+              <pre># .npmrc\n${esc(registryUrl('', true).replace(/^https?:/, ''))}:_authToken=${esc(t.token)}</pre>
+              <div class="row"><button class="btn" id="cp">${icon('copy', 15)}Kopírovat</button><span class="spacer"></span><button class="btn primary" data-close>Hotovo</button></div>`, (m2) => {
+              $('#cp', m2).onclick = () => { if (navigator.clipboard) navigator.clipboard.writeText(t.token); toast('Zkopírováno'); };
+            });
+            route();
+          };
+        });
+        $$('[data-del]', el).forEach((b) => { b.onclick = async () => { if (await confirmBox('Zneplatnit token?')) { await run(() => rr.revokeToken(b.dataset.del), 'Token zneplatněn'); route(); } }; });
+      },
+    });
+    return v;
+  };
+
+  // ---------------------------------------------------------------- logs
+  views.logs = async () => {
+    const tab = new URLSearchParams(location.hash.split('?')[1] || '').get('tab') || 'requests';
+    const l = await rr.getLogs({ limit: 1000 });
+    const v = setView('Logy', `
+      <div class="tabs"><button data-tab="requests" class="${tab === 'requests' ? 'active' : ''}">Požadavky</button><button data-tab="audit" class="${tab === 'audit' ? 'active' : ''}">Audit</button>
+        <span class="spacer"></span><label class="check"><input type="checkbox" id="auto" ${refreshTimer ? 'checked' : ''}> obnovovat každé 3 s</label>
+        <button type="button" class="btn small" id="logWin">${icon('terminal', 15)}Živý log v okně</button></div>
+      <div id="t"></div>`, 'terminal');
+    let t;
+    if (tab === 'audit') {
+      t = table('#t', {
+        id: 'audit', rows: l.audit, rowKey: (a, i) => `${a.time}-${i}`, placeholder: 'Hledat v auditu…', sort: { key: 'time', dir: -1 },
+        groups: [{ key: 'user', label: 'uživatel', value: (a) => a.user }, { key: 'action', label: 'akce', value: (a) => a.action }],
+        columns: [
+          { key: 'time', label: 'Čas', render: (a) => when(a.time) },
+          { key: 'user', label: 'Uživatel' },
+          { key: 'action', label: 'Akce', render: (a) => { const [ic, ty] = ACT_ICON(a.action); return `<span class="cell-main">${tile(ty || 'x', ic)}${esc(a.action)}</span>`; } },
+          { key: 'target', label: 'Cíl', render: (a) => `<code class="small">${esc(a.target)}</code>` },
+        ],
+      });
+    } else {
+      t = table('#t', {
+        id: 'requests', rows: l.requests, rowKey: (r, i) => `${r.time}-${i}`, placeholder: 'Hledat URL, uživatele, status…', sort: { key: 'time', dir: -1 },
+        groups: [{ key: 'class', label: 'třída statusu', value: (r) => `${String(r.status)[0]}xx` }, { key: 'user', label: 'uživatel', value: (r) => r.user }, { key: 'method', label: 'metoda', value: (r) => r.method }, { key: 'cache', label: 'cache', value: (r) => r.cache || 'lokálně' }],
+        columns: [
+          { key: 'time', label: 'Čas', render: (r) => `<span class="mono small" title="${esc(fmtDate(r.time))}">${esc(new Date(r.time).toLocaleTimeString())}</span>` },
+          { key: 'status', label: 'Status', render: (r) => `<span class="badge ${r.status < 300 ? 'ok' : r.status < 400 ? 'blue' : r.status < 500 ? 'warn' : 'off'}">${r.status}</span>` },
+          { key: 'method', label: 'Metoda', render: (r) => `<span class="mono">${esc(r.method)}</span>` },
+          { key: 'url', label: 'URL', render: (r) => `<code class="small">${esc(r.url)}</code>` },
+          { key: 'ms', label: 'ms', align: 'right', render: (r) => `<span class="mono">${r.ms}</span>` },
+          { key: 'user', label: 'Uživatel' },
+          { key: 'cache', label: 'Cache', toggle: true },
+          { key: 'ip', label: 'IP', toggle: true, hidden: true },
+        ],
+      });
+    }
+    $$('[data-tab]', v).forEach((b) => { b.onclick = () => { location.hash = `#/logs?tab=${b.dataset.tab}`; }; });
+    $('#logWin', v).onclick = liveLogWindow;
+    const tick = async () => {
+      if (!location.hash.startsWith('#/logs')) { clearInterval(refreshTimer); refreshTimer = null; return; }
+      const n = await rr.getLogs({ limit: 1000 }).catch(() => null);
+      if (n) t.setRows(tab === 'audit' ? n.audit : n.requests);
+    };
+    if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = setInterval(tick, 3000); }
+    $('#auto', v).onchange = (e) => {
+      clearInterval(refreshTimer); refreshTimer = null;
+      if (e.target.checked) refreshTimer = setInterval(tick, 3000);
+    };
+    return v;
   };
 
   function hookForm(h, types) {
@@ -663,73 +1336,6 @@ git push rr main      # ${repo.autoCreate === false ? 'automatické vytvoření 
         close(); route();
       };
     });
-  }
-
-  // ---------------------------------------------------------------- tasks & replication
-  views.jobs = async () => {
-    const [tasks, jobs] = await Promise.all([rr.listTasks(), rr.listReplications({ limit: 200 })]);
-    const v = setView('⏱ Úlohy a replikace', `
-      <div class="card table-wrap"><h2>Naplánované úlohy</h2><table><tr><th>Úloha</th><th>Interval</th><th>Poslední běh</th><th>Další běh</th><th>Výsledek</th><th></th></tr>
-        ${tasks.map((t) => `<tr><td><b>${esc(t.name)}</b><div class="muted small">${esc(t.description)}</div></td><td>${t.intervalSec >= 3600 ? `${t.intervalSec / 3600} h` : `${t.intervalSec} s`}</td>
-          <td>${fmtDate(t.lastRun) || '–'}</td><td>${fmtDate(t.nextRun) || '–'}</td>
-          <td class="small">${t.running ? '<span class="badge blue">běží</span>' : t.lastError ? `<span class="error">${esc(t.lastError)}</span>` : (t.lastResult ? `<code>${esc(JSON.stringify(t.lastResult).slice(0, 120))}</code>` : '–')}</td>
-          <td class="actions"><button class="btn small" data-run="${esc(t.id)}">▶ Spustit</button></td></tr>`).join('')}</table></div>
-      <div class="card table-wrap"><h2>Replikace (pravidla „push“)</h2><table><tr><th>Vytvořeno</th><th>Stav</th><th>Pravidlo</th><th>Událost</th><th>Položka</th><th>Cíl</th><th>Pokusy</th><th>Chyba</th><th></th></tr>
-        ${jobs.map((j) => `<tr><td>${fmtDate(j.created)}</td><td><span class="badge ${j.status === 'ok' ? 'ok' : j.status === 'error' ? 'off' : 'blue'}">${esc(j.status)}</span></td><td>${esc(j.ruleName)}</td><td>${esc(j.event)}</td>
-          <td>${esc(j.repo)}/${esc(j.item)}</td><td class="small"><code>${esc(j.target)}</code></td><td>${j.attempts}</td><td class="small error">${esc(j.error || '')}</td>
-          <td class="actions">${j.status === 'error' || j.status === 'ok' ? `<button class="btn small" data-retry="${esc(j.id)}">↻</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="9" class="muted">zatím žádné replikace – vytvořte směrovací pravidlo s „push“</td></tr>'}</table></div>`);
-    $$('[data-run]', v).forEach((b) => { b.onclick = async () => { await run(() => rr.runTask(b.dataset.run), 'Úloha dokončena'); route(); }; });
-    $$('[data-retry]', v).forEach((b) => { b.onclick = async () => { await run(() => rr.retryReplication(b.dataset.retry), 'Zařazeno'); setTimeout(route, 800); }; });
-  };
-
-  views.search = async () => {
-    const q = new URLSearchParams(location.hash.split('?')[1] || '').get('q') || '';
-    const res = q ? await rr.search({ q, size: 100 }) : { objects: [], total: 0 };
-    const v = setView('Hledání', `
-      <div class="card row"><input id="q" value="${esc(q)}" placeholder="název, popis, keywords:xyz, scope:firma, maintainer:m5ike" style="flex:1"><button class="btn primary" id="go">Hledat</button></div>
-      <div class="card table-wrap"><table><tr><th>Balíček</th><th>Verze</th><th>Repozitář</th><th>Popis</th></tr>
-      ${res.objects.map((o) => `<tr class="click" data-r="${esc(o.repository)}" data-p="${esc(o.package.name)}"><td><b>${esc(o.package.name)}</b></td><td>${esc(o.package.version)}</td><td>${esc(o.repository)}</td><td>${esc(o.package.description)}</td></tr>`).join('') || `<tr><td colspan="4" class="muted">${q ? 'nic nenalezeno' : 'zadejte dotaz'}</td></tr>`}
-      </table></div>`);
-    const go = () => { location.hash = `#/search?q=${enc($('#q', v).value)}`; };
-    $('#go', v).onclick = go;
-    $('#q', v).onkeydown = (e) => { if (e.key === 'Enter') go(); };
-    $$('tr[data-p]', v).forEach((tr) => { tr.onclick = () => { location.hash = `#/pkg/${enc(tr.dataset.r)}/${enc(tr.dataset.p)}`; }; });
-  };
-
-  views.routes = async () => {
-    const [rules, repos] = await Promise.all([rr.listRoutes(), rr.listRepos()]);
-    const v = setView('Směrování', `
-      <div class="card"><p class="muted" style="margin-top:0">Routing plugin přesměrovává požadavky na jiné registry dle masky URL / části URL / klíče
-        (<code>/~klic/…</code>, hlavička <code>X-RR-Key</code> nebo <code>?rr_key=</code>), hlavičky nebo pokud položka lokálně neexistuje.
-        Vzdálený obsah se ukládá do cache a do vypršení platnosti se servíruje z ní.</p>
-        <button class="btn primary" id="newRule">+ Nové pravidlo</button></div>
-      <div class="card table-wrap"><table>
-        <tr><th>Zap.</th><th>Prio</th><th>Název</th><th>Kdy</th><th>Maska</th><th>Repo</th><th>Klíč</th><th>Cíl</th><th>Cache</th><th></th></tr>
-        ${rules.map((r) => `<tr><td><input type="checkbox" data-toggle="${esc(r.id)}" ${r.enabled ? 'checked' : ''}></td><td>${r.priority}</td><td style="min-width:160px"><b>${esc(r.name)}</b><div class="muted small">${esc(r.description || '')}</div></td>
-          <td><span class="badge ${r.when === 'always' ? 'blue' : ''}">${r.when === 'always' ? 'vždy' : 'nenalezeno'}</span></td>
-          <td><code>${esc(r.matchOn)}/${esc(r.matchType)}: ${esc(r.pattern || '*')}</code>${r.header ? `<div class="small">hlavička ${esc(r.header.name)} ~ ${esc(r.header.pattern || '*')}</div>` : ''}</td>
-          <td>${esc(r.repo)}${r.repoType !== '*' ? ` (${esc(r.repoType)})` : ''}</td><td>${esc(r.key || '–')}</td><td><code>${esc(r.target)}</code></td><td>${r.cacheTtl == null ? 'výchozí' : `${r.cacheTtl} s`}</td>
-          <td class="actions"><button class="btn small" data-edit="${esc(r.id)}">Upravit</button> <button class="btn small danger" data-del="${esc(r.id)}">Smazat</button></td></tr>`).join('') || '<tr><td colspan="10" class="muted">žádná pravidla</td></tr>'}
-      </table></div>
-      <div class="card"><h2>Test směrování</h2>
-        <div class="form">
-          <label>Cesta <input id="tPath" value="/@firma/utils" placeholder="/lodash nebo /@scope/name"></label>
-          <label>Repozitář ${repoSelect(repos, repos.find((r) => r.default)?.name).replace('id="repoSel"', 'id="tRepo"')}</label>
-          <label>Klíč <input id="tKey"></label>
-          <label>Metoda <select id="tMethod"><option>GET</option><option>HEAD</option><option>POST</option><option>PUT</option></select></label>
-        </div>
-        <div class="row" style="margin-top:10px"><button class="btn" id="test">Otestovat</button></div>
-        <div id="tOut"></div>
-      </div>`);
-    $('#newRule', v).onclick = () => ruleForm(null, repos);
-    $$('[data-edit]', v).forEach((b) => { b.onclick = () => ruleForm(rules.find((r) => r.id === b.dataset.edit), repos); });
-    $$('[data-del]', v).forEach((b) => { b.onclick = async () => { if (await confirmBox('Smazat pravidlo?')) { await run(() => rr.deleteRoute(b.dataset.del), 'Smazáno'); route(); } }; });
-    $$('[data-toggle]', v).forEach((c) => { c.onchange = async () => { await run(() => rr.updateRoute(c.dataset.toggle, { enabled: c.checked }), c.checked ? 'Zapnuto' : 'Vypnuto'); }; });
-    $('#test', v).onclick = async () => {
-      const r = await run(() => rr.testRoute({ path: $('#tPath', v).value, repo: $('#tRepo', v).value, key: $('#tKey', v).value, method: $('#tMethod', v).value }));
-      $('#tOut', v).innerHTML = `<p>Balíček: <code>${esc(r.request.packagePath || '–')}</code> · vždy: <b>${esc(r.always ? r.always.name : '–')}</b> · při nenalezení: <b>${esc(r.notfound ? r.notfound.name : '–')}</b></p>
-        <table><tr><th></th><th>Pravidlo</th><th>Kdy</th><th>Cílová URL</th></tr>${r.rules.map((x) => `<tr><td>${x.matched ? '✅' : '❌'}</td><td>${esc(x.name)}</td><td>${esc(x.when)}</td><td><code>${esc(x.target)}</code></td></tr>`).join('')}</table>`;
-    };
   }
 
   function ruleForm(r, repos) {
@@ -778,83 +1384,6 @@ git push rr main      # ${repo.autoCreate === false ? 'automatické vytvoření 
     });
   }
 
-  views.cache = async () => {
-    const q = new URLSearchParams(location.hash.split('?')[1] || '').get('q') || '';
-    const [s, list] = await Promise.all([rr.cacheStats(), rr.listCache({ q, limit: 300 })]);
-    const v = setView('Cache', `
-      <div class="grid">
-        <div class="card"><div class="muted">Položek</div><div class="stat">${s.entries}</div><div class="muted small">expirovaných ${s.expired}</div></div>
-        <div class="card"><div class="muted">Velikost</div><div class="stat">${fmtBytes(s.bytes)}</div></div>
-        <div class="card"><div class="muted">Hit / Miss</div><div class="stat">${s.hits} / ${s.misses}</div><div class="muted small">stale ${s.stale} · chyby ${s.errors}</div></div>
-      </div>
-      <div class="card row"><input id="q" value="${esc(q)}" placeholder="filtr URL" style="flex:1"><button class="btn" id="filter">Filtrovat</button>
-        <button class="btn" id="pExp">Smazat expirované</button><button class="btn" id="pQ">Smazat dle filtru</button><button class="btn danger" id="pAll">Smazat vše</button></div>
-      <div class="card table-wrap"><table><tr><th>URL</th><th>Status</th><th>Velikost</th><th>Uloženo</th><th>Expirace</th><th></th></tr>
-        ${list.entries.map((e) => `<tr><td><code>${esc(e.url)}</code></td><td>${e.status}</td><td>${fmtBytes(e.size)}</td><td>${fmtDate(e.created)}</td>
-          <td>${e.expired ? '<span class="badge off">expirováno</span>' : fmtDate(e.expires)}</td><td class="actions"><button class="btn small danger" data-del="${esc(e.key)}">✕</button></td></tr>`).join('') || '<tr><td colspan="6" class="muted">cache je prázdná</td></tr>'}
-      </table><p class="muted small">Zobrazeno ${list.entries.length} z ${list.total}</p></div>`);
-    const purge = async (query, msg) => { const r = await run(() => rr.purgeCache(query)); toast(`${msg}: ${r.removed}`); route(); };
-    $('#filter', v).onclick = () => { location.hash = `#/cache?q=${enc($('#q', v).value)}`; };
-    $('#pExp', v).onclick = () => purge({ expired: 1 }, 'Smazáno expirovaných');
-    $('#pQ', v).onclick = () => purge({ q: $('#q', v).value }, 'Smazáno');
-    $('#pAll', v).onclick = async () => { if (await confirmBox('Smazat celou cache?')) purge({}, 'Smazáno'); };
-    $$('[data-del]', v).forEach((b) => { b.onclick = async () => { await run(() => rr.deleteCacheEntry(b.dataset.del)); route(); }; });
-  };
-
-  views.users = async () => {
-    const users = await rr.listUsers();
-    const roles = ['publisher', 'reader', 'admin'];
-    const v = setView('Uživatelé', `
-      <div class="row"><button class="btn primary" id="new">+ Nový uživatel</button></div>
-      <div class="card table-wrap"><table><tr><th>Jméno</th><th>Role</th><th>E-mail</th><th>Vytvořen</th><th></th></tr>
-        ${users.map((u) => `<tr><td><b>${esc(u.name)}</b> ${u.builtin ? '<span class="badge blue">vestavěný (.env)</span>' : ''}</td>
-          <td>${u.builtin ? 'admin' : `<select data-role="${esc(u.name)}">${roles.map((r) => `<option${r === u.role ? ' selected' : ''}>${r}</option>`).join('')}</select>`}</td>
-          <td>${esc(u.email)}</td><td>${fmtDate(u.created)}</td>
-          <td class="actions">${u.builtin ? '' : `<button class="btn small" data-pw="${esc(u.name)}">Heslo</button> <button class="btn small danger" data-del="${esc(u.name)}">Smazat</button>`}</td></tr>`).join('')}
-      </table><p class="muted small">Role: <b>reader</b> – čtení, <b>publisher</b> – čtení a publikace, <b>admin</b> – vše. Uživatelé se mohou přihlásit i přes <code>npm login --auth-type=legacy</code>.</p></div>`);
-    $('#new', v).onclick = () => modal(`<h2>Nový uživatel</h2><form class="form" id="f">
-        <label>Jméno <input name="name" required></label><label>Heslo <input name="password" type="password" required></label>
-        <label>E-mail <input name="email"></label><label>Role <select name="role">${roles.map((r) => `<option>${r}</option>`).join('')}</select></label></form>
-        <div class="row"><span class="spacer"></span><button class="btn" data-close>Zrušit</button><button class="btn primary" id="ok">Vytvořit</button></div>`, (el, close) => {
-      $('#ok', el).onclick = async () => { await run(() => rr.createUser(formData($('#f', el))), 'Uživatel vytvořen'); close(); route(); };
-    });
-    $$('[data-role]', v).forEach((s) => { s.onchange = () => run(() => rr.updateUser(s.dataset.role, { role: s.value }), 'Role změněna'); });
-    $$('[data-pw]', v).forEach((b) => {
-      b.onclick = () => modal(`<h2>Heslo pro ${esc(b.dataset.pw)}</h2><label>Nové heslo <input type="password" id="pw"></label>
-        <div class="row"><span class="spacer"></span><button class="btn" data-close>Zrušit</button><button class="btn primary" id="ok">Uložit</button></div>`, (el, close) => {
-        $('#ok', el).onclick = async () => { await run(() => rr.updateUser(b.dataset.pw, { password: $('#pw', el).value }), 'Heslo změněno'); close(); };
-      });
-    });
-    $$('[data-del]', v).forEach((b) => { b.onclick = async () => { if (await confirmBox(`Smazat uživatele ${b.dataset.del}?`)) { await run(() => rr.deleteUser(b.dataset.del), 'Smazáno'); route(); } }; });
-  };
-
-  views.tokens = async () => {
-    const [tokens, users] = await Promise.all([rr.listTokens(), me.role === 'admin' ? rr.listUsers() : []]);
-    const v = setView('Tokeny', `
-      <div class="row"><button class="btn primary" id="new">+ Nový token</button></div>
-      <div class="card table-wrap"><table><tr><th>ID</th><th>Název</th><th>Uživatel</th><th>Druh</th><th>Token</th><th>Jen čtení</th><th>Vytvořen</th><th>Použit</th><th>Expirace</th><th></th></tr>
-        ${tokens.map((t) => `<tr><td><code>${esc(t.id)}</code></td><td>${esc(t.name)}</td><td>${esc(t.user)}</td><td>${esc(t.kind)}</td><td><code>${esc(t.preview)}</code></td><td>${yes(t.readonly)}</td>
-          <td>${fmtDate(t.created)}</td><td>${fmtDate(t.lastUsed)}</td><td>${t.expires ? fmtDate(t.expires) : 'nikdy'}</td>
-          <td class="actions"><button class="btn small danger" data-del="${esc(t.id)}">Zneplatnit</button></td></tr>`).join('') || '<tr><td colspan="10" class="muted">žádné tokeny</td></tr>'}
-      </table><p class="muted small">Hlavní API token (RR_API_TOKEN) se nastavuje v <code>make menuconfig</code> a zde se nezobrazuje.</p></div>`);
-    $('#new', v).onclick = () => modal(`<h2>Nový token</h2><form class="form" id="f">
-        <label>Název <input name="name" value="ci"></label>
-        ${me.role === 'admin' ? `<label>Pro uživatele <select name="user"><option value="">(já – ${esc(me.name)})</option>${users.filter((u) => !u.builtin).map((u) => `<option>${esc(u.name)}</option>`).join('')}</select></label>` : ''}
-        <label>Platnost v sekundách (0 = navždy) <input name="ttl" type="number" value="0"></label>
-        <label class="check"><input type="checkbox" name="readonly"> jen pro čtení</label></form>
-        <div class="row"><span class="spacer"></span><button class="btn" data-close>Zrušit</button><button class="btn primary" id="ok">Vytvořit</button></div>`, (el, close) => {
-      $('#ok', el).onclick = async () => {
-        const t = await run(() => rr.createToken(formData($('#f', el))));
-        close();
-        modal(`<h2>Token vytvořen</h2><p>Uložte si ho – znovu se nezobrazí.</p><pre>${esc(t.token)}</pre>
-          <pre># .npmrc\n${esc(registryUrl('', true).replace(/^https?:/, ''))}:_authToken=${esc(t.token)}</pre>
-          <div class="row"><span class="spacer"></span><button class="btn primary" data-close>Hotovo</button></div>`);
-        route();
-      };
-    });
-    $$('[data-del]', v).forEach((b) => { b.onclick = async () => { if (await confirmBox('Zneplatnit token?')) { await run(() => rr.revokeToken(b.dataset.del), 'Token zneplatněn'); route(); } }; });
-  };
-
   views.settings = async () => {
     const [s, repos, plugins] = await Promise.all([rr.getSettings(), rr.listRepos(), rr.listPlugins()]);
     const v = setView('Nastavení', `
@@ -872,27 +1401,11 @@ git push rr main      # ${repo.autoCreate === false ? 'automatické vytvoření 
       <div class="card"><h2>Pluginy</h2>${plugins.map((p) => `<label class="check"><input type="checkbox" data-plugin="${esc(p.name)}" ${p.enabled ? 'checked' : ''}> <b>${esc(p.name)}</b> – ${esc(p.description)}</label>`).join('')}
         <p class="muted small">Vlastní pluginy lze přidat do <code>data/plugins/*.js</code>.</p></div>
       <div class="row"><button class="btn primary" id="save">Uložit nastavení</button></div>
-      <div class="card"><h2>Konfigurace serveru (.env / make menuconfig)</h2><p class="muted">Port, heslo administrátora a API token se nastavují příkazem <code>make menuconfig</code> a projeví se po restartu kontejneru (<code>make restart</code>).</p></div>`);
+      <div class="card"><h2>Konfigurace serveru (.env / make menuconfig)</h2><p class="muted">Port, heslo administrátora a API token se nastavují příkazem <code>make menuconfig</code> a projeví se po restartu kontejneru (<code>make restart</code>).</p></div>`, 'gear');
     $('#save', v).onclick = async () => {
       const d = formData($('#f', v));
       d.plugins = $$('[data-plugin]', v).filter((c) => c.checked).map((c) => c.dataset.plugin);
       await run(() => rr.updateSettings(d), 'Nastavení uloženo');
-    };
-  };
-
-  views.logs = async () => {
-    const tab = new URLSearchParams(location.hash.split('?')[1] || '').get('tab') || 'requests';
-    const l = await rr.getLogs({ limit: 300 });
-    const v = setView('Logy', `
-      <div class="tabs"><button data-tab="requests" class="${tab === 'requests' ? 'active' : ''}">Požadavky</button><button data-tab="audit" class="${tab === 'audit' ? 'active' : ''}">Audit</button>
-        <span class="spacer"></span><label class="check"><input type="checkbox" id="auto" ${refreshTimer ? 'checked' : ''}> auto-refresh</label></div>
-      <div class="card table-wrap">${tab === 'audit'
-    ? `<table><tr><th>Čas</th><th>Uživatel</th><th>Akce</th><th>Cíl</th></tr>${l.audit.map((a) => `<tr><td>${fmtDate(a.time)}</td><td>${esc(a.user)}</td><td>${esc(a.action)}</td><td>${esc(a.target)}</td></tr>`).join('')}</table>`
-    : `<table><tr><th>Čas</th><th>Status</th><th>Metoda</th><th>URL</th><th>ms</th><th>Uživatel</th><th>Cache</th></tr>${l.requests.map((r) => `<tr><td>${fmtDate(r.time)}</td><td><span class="badge ${r.status < 400 ? 'ok' : 'off'}">${r.status}</span></td><td>${esc(r.method)}</td><td><code>${esc(r.url)}</code></td><td>${r.ms}</td><td>${esc(r.user)}</td><td>${esc(r.cache)}</td></tr>`).join('')}</table>`}</div>`);
-    $$('[data-tab]', v).forEach((b) => { b.onclick = () => { location.hash = `#/logs?tab=${b.dataset.tab}`; }; });
-    $('#auto', v).onchange = (e) => {
-      clearInterval(refreshTimer); refreshTimer = null;
-      if (e.target.checked) refreshTimer = setInterval(() => { if (location.hash.startsWith('#/logs')) route(); else { clearInterval(refreshTimer); refreshTimer = null; } }, 3000);
     };
   };
 
@@ -902,26 +1415,27 @@ git push rr main      # ${repo.autoCreate === false ? 'automatické vytvoření 
     const v = setView('Klientské balíčky', `
       <div class="card"><h2>Rychlá instalace</h2><pre>curl -fsSL ${esc(base)}/install.sh | bash                    # vše
 curl -fsSL ${esc(base)}/install.sh | bash -s -- rr_bash-cli    # jen bash CLI</pre>
-        ${me.role === 'admin' ? '<div class="row" style="margin-top:10px"><button class="btn" id="rebuild">🔄 Přegenerovat klientské knihovny ze specifikace API</button></div>' : ''}</div>
+        ${me.role === 'admin' ? `<div class="row" style="margin-top:10px"><button class="btn" id="rebuild">${icon('refresh', 15)}Přegenerovat klientské knihovny ze specifikace API</button></div>` : ''}</div>
       ${list.map((p) => `<div class="card"><h2>${esc(p.name)} <span class="badge blue">v${esc(p.version)}</span></h2><p>${esc(p.description)}</p>
-        <pre>${esc(p.npmInstall)}</pre><div class="row" style="margin-top:8px"><a class="btn" href="${esc(p.download)}">⬇ ${esc(p.file)}</a>
-        <span class="muted small">${fmtBytes(p.size)} · ${p.files} souborů · příkazy: ${esc(p.bin.join(', ') || '–')} · maintainer ${esc(p.maintainer)}</span></div></div>`).join('')}`);
+        <pre>${esc(p.npmInstall)}</pre><div class="row" style="margin-top:8px"><a class="btn" href="${esc(p.download)}">${icon('download', 15)}${esc(p.file)}</a>
+        <span class="muted small">${fmtBytes(p.size)} · ${p.files} souborů · příkazy: ${esc(p.bin.join(', ') || '–')} · maintainer ${esc(p.maintainer)}</span></div></div>`).join('')}`, 'download');
     const b = $('#rebuild', v);
     if (b) b.onclick = async () => { const r = await run(() => rr.rebuildClients(), 'Klienti přegenerováni'); toast(`Publikováno: ${r.published.join(', ') || 'nic nového (verze již existují)'}`); };
   };
 
-  // ------------------------------------------------------------------ routing & auth
+  // ------------------------------------------------------------------ routing & shell
+  const VIEW_NAV = { repo: 'repos', pkg: 'packages' };
   async function route() {
     const [p] = location.hash.replace(/^#\/?/, '').split('?');
     const [name, ...args] = p.split('/').filter(Boolean);
     const view = views[name] ? name : 'dashboard';
-    $$('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === (view === 'repo' ? 'repos' : view === 'pkg' ? 'packages' : view)));
-    $('.sidebar').classList.remove('open');
+    $$('#nav a').forEach((a) => { const on = a.dataset.view === (VIEW_NAV[view] || view); a.classList.toggle('active', on); if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
+    $('#sidebar').classList.remove('open');
     try {
       await views[view](...args.map(decodeURIComponent));
     } catch (e) {
       if (e.status === 401) return logout();
-      setView('Chyba', `<div class="card"><p class="error">${esc(e.message)}</p>${e.status === 403 ? '<p class="muted">Nemáte oprávnění pro tuto sekci.</p>' : ''}</div>`);
+      setView('Chyba', `<div class="card"><p class="error">${esc(e.message)}</p>${e.status === 403 ? '<p class="muted">Nemáte oprávnění pro tuto sekci.</p>' : ''}</div>`, 'alert');
     }
   }
 
@@ -930,11 +1444,49 @@ curl -fsSL ${esc(base)}/install.sh | bash -s -- rr_bash-cli    # jen bash CLI</p
   }
 
   function showLogin(err) {
+    wm.closeAll();
     $('#app').classList.add('hidden');
     $('#login').classList.remove('hidden');
     $('#lServer').value = LS.get('server');
     if (CFG.standalone) $('#lServer').closest('label').classList.add('hidden');
     $('#loginErr').textContent = err || '';
+  }
+
+  // theme: dark | light | auto
+  const THEMES = ['dark', 'light', 'auto'];
+  function applyTheme(t) {
+    const eff = t === 'auto' ? (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') : t;
+    document.documentElement.dataset.theme = eff;
+    const b = $('#themeBtn');
+    if (b) b.innerHTML = `${icon(t === 'light' ? 'sun' : t === 'dark' ? 'moon' : 'eye', 15)}<span>${t === 'light' ? 'Světlý' : t === 'dark' ? 'Tmavý' : 'Podle systému'}</span>`;
+  }
+  function cycleTheme() {
+    const cur = RRUI.LS.get('theme', 'dark');
+    const next = THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length];
+    RRUI.LS.set('theme', next);
+    applyTheme(next);
+    toast(`Motiv: ${next === 'light' ? 'světlý' : next === 'dark' ? 'tmavý' : 'podle systému'}`);
+  }
+
+  function openPalette() {
+    if (!me) return;
+    const nav = $$('#nav a').filter((a) => !a.classList.contains('hidden')).map((a) => ({ title: a.textContent.trim(), icon: (a.querySelector('path') && Object.keys(RRUI.ICONS).find((k) => RRUI.ICONS[k] === a.querySelector('path').getAttribute('d'))) || 'chevron', group: 'sekce', run: () => { location.hash = a.getAttribute('href'); } }));
+    const actions = [
+      ...(isAdmin() ? [{ title: 'Nový repozitář', icon: 'plus', group: 'akce', run: () => repoForm() }, { title: 'Živý log požadavků v okně', icon: 'terminal', group: 'akce', run: liveLogWindow }] : []),
+      { title: 'Přepnout motiv (tmavý / světlý / systém)', icon: 'moon', group: 'akce', keywords: 'theme dark light', run: cycleTheme },
+      { title: 'Uspořádat okna do dlaždic', icon: 'grid', group: 'okna', run: () => wm.tile() },
+      { title: 'Zavřít všechna okna', icon: 'x', group: 'okna', run: () => wm.closeAll() },
+      { title: 'Odhlásit', icon: 'logout', group: 'akce', run: logout },
+    ];
+    const repos = repoCache.map((r) => ({ title: r.name, hint: r.type, icon: TYPE_ICON[r.type] || 'repo', group: 'repozitář', run: () => { location.hash = `#/repo/${enc(r.name)}`; } }));
+    RRUI.palette({
+      items: [...nav, ...actions, ...repos],
+      search: async (q) => {
+        const res = await rr.search({ q, size: 12 });
+        return res.objects.map((o) => ({ title: o.package.name, hint: o.package.version, icon: 'package', group: o.repository, run: () => { location.hash = `#/pkg/${enc(o.repository)}/${enc(o.package.name)}`; } }))
+          .concat([{ title: `Hledat „${q}“ ve všech balíčcích`, icon: 'search', group: 'hledání', run: () => { location.hash = `#/search?q=${enc(q)}`; } }]);
+      },
+    });
   }
 
   async function start() {
@@ -948,19 +1500,29 @@ curl -fsSL ${esc(base)}/install.sh | bash -s -- rr_bash-cli    # jen bash CLI</p
     }
     $('#login').classList.add('hidden');
     $('#app').classList.remove('hidden');
-    $('#who').textContent = `${me.name} (${me.role}${me.readonly ? ', jen čtení' : ''})`;
+    $('#who').textContent = me.name;
+    $('#whoRole').textContent = `${me.role}${me.readonly ? ' · jen čtení' : ''}`;
+    $('#avatar').textContent = me.name.slice(0, 2);
     const st = await rr.status().catch(() => null);
     if (st) { $('#serverInfo').textContent = `${st.title} ${st.version} · ${st.registry}`; document.title = `${st.title} – administrace`; }
-    if (me.role !== 'admin') ['routes', 'cache', 'users', 'settings', 'logs', 'webhooks', 'jobs'].forEach((v) => $(`#nav a[data-view="${v}"]`).classList.add('hidden'));
+    repoCache = await rr.listRepos().catch(() => []);
+    const adminOnly = ['routes', 'cache', 'users', 'settings', 'logs', 'webhooks', 'jobs'];
+    adminOnly.forEach((v) => $(`#nav a[data-view="${v}"]`).classList.toggle('hidden', !isAdmin()));
+    $('#newBtn').classList.toggle('hidden', !isAdmin());
+    $('#liveLogBtn').classList.toggle('hidden', !isAdmin());
     route();
   }
 
   function logout() {
     if (rr && rr.token) rr.logout().catch(() => {});
     LS.set('token', '');
+    me = null;
     showLogin();
   }
 
+  RRUI.hydrate(document);
+  wm.init($('#wm'), $('#dock'));
+  applyTheme(RRUI.LS.get('theme', 'dark'));
   let loginMode = 'password';
   $$('#loginTabs button').forEach((b) => {
     b.onclick = () => {
@@ -986,7 +1548,17 @@ curl -fsSL ${esc(base)}/install.sh | bash -s -- rr_bash-cli    # jen bash CLI</p
     }
   };
   $('#logout').onclick = logout;
-  $('#menuToggle').onclick = () => $('.sidebar').classList.toggle('open');
+  $('#themeBtn').onclick = cycleTheme;
+  $('#cmdBtn').onclick = openPalette;
+  $('#liveLogBtn').onclick = liveLogWindow;
+  $('#newBtn').onclick = () => repoForm();
+  $('#menuToggle').onclick = () => $('#sidebar').classList.toggle('open');
+  document.addEventListener('keydown', (e) => {
+    const typing = /INPUT|TEXTAREA|SELECT/.test((e.target && e.target.tagName) || '');
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); }
+    else if (e.key === '/' && !typing && me && !$('.palette-wrap')) { e.preventDefault(); openPalette(); }
+  });
+  matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => { if (RRUI.LS.get('theme', 'dark') === 'auto') applyTheme('auto'); });
   window.addEventListener('hashchange', () => { if (rr && rr.token && me) route(); });
   start();
 })();

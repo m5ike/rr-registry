@@ -3,110 +3,111 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{TITLE}} – lokální registr balíčků</title>
+  <title>{{TITLE}} – registr balíčků, image a git repozitářů</title>
+  <meta name="description" content="Vlastní registr npm balíčků, Docker image, git repozitářů a souborů se směrováním, cache a replikací.">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <header class="hero">
-    <div class="wrap">
-      <nav class="top">
-        <div class="brand"><img src="/static/logo.svg" alt="" width="34" height="34"> {{TITLE}}</div>
-        <div class="links"><a href="#start">Začínáme</a><a href="#clients">Klienti</a><a href="#git">Git</a><a href="#routing">Směrování</a><a href="#api">API</a><a class="btn" href="/admin/">Administrace →</a></div>
-      </nav>
-      {{MOTD}}
-      <h1>Lokální registr balíčků pro npm a spol.</h1>
-      <p class="lead">Hostujte vlastní balíčky, zrcadlete npmjs.org s cache, směrujte požadavky na další registry
-        a spravujte vše přes web, CLI, bash GUI nebo REST API.</p>
-      <div class="pill-row">
-        <span class="pill">npm</span><span class="pill">yarn</span><span class="pill">pnpm</span><span class="pill">bun</span><span class="pill">deno npm:</span><span class="pill">docker</span><span class="pill">git</span><span class="pill">generic soubory</span>
-      </div>
-      <pre class="hero-code"><code>npm config set registry {{BASE}}/</code></pre>
-      <div class="stats">
-        <div><b>{{REPOCOUNT}}</b><span>repozitářů</span></div>
-        <div><b>{{PACKAGES}}</b><span>balíčků</span></div>
-        <div><b>v{{VERSION}}</b><span>verze serveru</span></div>
-        <div><b>{{UPTIME}} min</b><span>uptime</span></div>
-      </div>
-    </div>
-  </header>
+  <div class="wrap">
+    <nav class="top" aria-label="Hlavní">
+      <a class="brand" href="#top"><img src="/static/logo.svg" alt="" width="34" height="34"><span>rr<span class="dot">.</span>registry</span></a>
+      <div class="links"><a href="#start">Začínáme</a><a href="#kotviste">Typy</a><a href="#klienti">Klienti</a><a href="#smerovani">Směrování</a><a href="#docs">Dokumentace</a>
+        <a class="btn primary" href="/admin/">Administrace</a></div>
+    </nav>
 
-  <main class="wrap">
-    <section id="start">
+    <header id="top" class="hero">
+      <div class="hero-text">
+        {{MOTD}}
+        <span class="chip"><i class="dot ok"></i>v{{VERSION}} · npm · docker · git · soubory</span>
+        <h1>Jeden přístav<br>pro všechny<br><span class="accent">vaše balíky.</span></h1>
+        <p class="lead">Hostujte npm balíčky, Docker image, git repozitáře i soubory na vlastním serveru. Co nemáte, se stáhne a uloží do cache. Co publikujete, se může samo zreplikovat dál.</p>
+        <div class="cta"><a class="btn primary big" href="#start">Nastavit registr</a><a class="btn big" href="#klienti">Stáhnout klienty</a></div>
+        <div class="stats"><div><b>{{REPOCOUNT}}</b><span>repozitářů</span></div><div><b>{{PACKAGES}}</b><span>balíčků</span></div><div><b>{{GITREPOS}}</b><span>git repozitářů</span></div><div><b>{{UPTIME}} min</b><span>uptime</span></div></div>
+      </div>
+      <figure class="term">
+        <div class="term-bar"><i></i><i></i><i></i><span>~/projekt</span></div>
+<pre><span class="m">$</span> npm config set registry {{BASE}}/
+<span class="m">$</span> npm install lodash
+<span class="ok">✓</span> lodash <span class="m">z cache · npmjs-fallback</span>
+<span class="m">$</span> docker push {{DOCKERHOST}}/web/app:2.4.0
+<span class="ok">✓</span> 2.4.0: digest sha256:…
+<span class="m">$</span> git push {{BASE}}/git/tym/api.git main
+<span class="ok">✓</span> tym/api → <span class="a">replikováno dál</span></pre>
+      </figure>
+    </header>
+
+    <section id="start" class="sec">
       <h2>Začínáme</h2>
       <div class="cols">
-        <div class="card">
-          <h3>1. Nastavte registr</h3>
+        <div class="card"><span class="num">1</span><h3>Nastavte registr</h3>
           <pre><code>npm config set registry {{BASE}}/
 # jen pro jeden projekt (.npmrc):
 registry={{BASE}}/
-# pouze vlastní scope:
-@firma:registry={{BASE}}/</code></pre>
-        </div>
-        <div class="card">
-          <h3>2. Přihlaste se a publikujte</h3>
+# jen vlastní scope:
+@firma:registry={{BASE}}/</code></pre></div>
+        <div class="card"><span class="num">2</span><h3>Přihlaste se a publikujte</h3>
           <pre><code>npm login --registry {{BASE}}/ --auth-type=legacy
 # nebo token do .npmrc:
 {{HOST}}/:_authToken=&lt;token&gt;
-npm publish</code></pre>
-        </div>
-        <div class="card">
-          <h3>3. Instalujte</h3>
-          <pre><code>npm install lodash      # z cache / npmjs.org
+npm publish</code></pre></div>
+        <div class="card"><span class="num">3</span><h3>Instalujte cokoli</h3>
+          <pre><code>npm install lodash      # z cache / upstreamu
 npm install @firma/lib  # z lokálního repozitáře
 yarn config set npmRegistryServer {{BASE}}/
-pnpm config set registry {{BASE}}/</code></pre>
-        </div>
+pnpm config set registry {{BASE}}/</code></pre></div>
       </div>
-      <h3>Repozitáře</h3>
-      <div class="card table"><table><tr><th>Název</th><th>Typ</th><th>URL registru</th><th>Popis</th></tr>{{REPOS}}</table></div>
+      <div class="card table"><table><thead><tr><th>Repozitář</th><th>Typ</th><th>Adresa</th><th>Popis</th></tr></thead><tbody>{{REPOS}}</tbody></table></div>
     </section>
 
-    <section id="clients">
-      <h2>Klientské nástroje <span class="muted">(maintainer m5ike)</span></h2>
-      <p>Všechny nástroje volají správcovské API přes klientskou knihovnu, která se generuje při sestavení serveru
-        ze specifikace API. Instalace jedním příkazem (do <code>~/.local/bin</code>):</p>
-      <pre><code>curl -fsSL {{BASE}}/install.sh | bash                       # všechny klienty
-curl -fsSL {{BASE}}/install.sh | bash -s -- rr_bash-cli       # jen vybraný</code></pre>
+    <section id="kotviste" class="sec">
+      <h2>Čtyři kotviště, jedna adresa</h2>
+      <div class="cols four">
+        <article class="card type"><span class="tile npm"><svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9zM4 7.5l8 4.5 8-4.5M12 12v9"/></svg></span>
+          <h3>npm a spol.</h3><p>Publikace, dist-tagy, vyhledávání a audit. Funguje s yarn, pnpm, bun i deno.</p><code class="cmd-line npm">npm publish --registry {{BASE}}/</code></article>
+        <article class="card type"><span class="tile docker"><svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10h18v6a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4zM6 10V6h4v4M10 10V6h4v4M14 10V7h3v3"/></svg></span>
+          <h3>Docker image</h3><p>Docker Registry API v2: push, pull, multi-platform indexy a úklid nepoužitých vrstev.</p><code class="cmd-line docker">docker push {{DOCKERHOST}}/tym/app:1.0</code></article>
+        <article class="card type"><span class="tile git"><svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4v10M18 4a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5zM6 14a3 3 0 1 1 0 6 3 3 0 0 1 0-6zM18 9c0 4-4 5-9.5 6.5"/></svg></span>
+          <h3>Git</h3><p>Clone a push přes HTTP, chráněné větve, zrcadla z GitHubu a automatický push zpět.</p><code class="cmd-line git">git push {{BASE}}/git/tym/api.git</code></article>
+        <article class="card type"><span class="tile generic"><svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/></svg></span>
+          <h3>Soubory</h3><p>Buildy, archivy a dokumentace s retencí, kvótami a neměnnými verzemi.</p><code class="cmd-line">curl -T app.zip {{BASE}}/r/files/</code></article>
+      </div>
+    </section>
+
+    <section id="klienti" class="sec">
+      <div class="sec-head"><h2>Klienti <span class="muted">maintainer m5ike</span></h2>
+        <code class="cmd-line">curl -fsSL {{BASE}}/install.sh | bash</code></div>
+      <p class="muted">Všechny nástroje volají správcovské API přes klientskou knihovnu, která se generuje při sestavení serveru ze specifikace API. Instalátor je uloží do <code>~/.local/bin</code>; jen vybraný klient: <code>| bash -s -- rr_bash-cli</code>.</p>
       <div class="cols">{{CLIENTS}}</div>
     </section>
 
-    <section id="git">
-      <h2>Git repozitáře</h2>
-      <div class="cols">
-        <div class="card"><h3>Push a clone</h3><pre><code>git remote add rr {{BASE}}/git/tym/projekt.git
-git push rr main   # vytvoří repozitář
-git clone {{BASE}}/git/tym/projekt.git</code></pre></div>
-        <div class="card"><h3>Zrcadla GitHubu</h3><p><b>Pull zrcadlo</b> udržuje lokální kopii repozitáře z GitHubu (plánovaně, při přístupu nebo webhookem),
-          <b>push zrcadlo</b> po každém push odešle změny na GitHub. Hromadný import celé organizace jedním příkazem.</p>
-          <pre><code>rr git github git moje-org --token ghp_…</code></pre></div>
-        <div class="card"><h3>Ochrana a správa</h3><p>Chráněné větve, neměnné repozitáře, kvóty, přístupová práva, webhooky a procházení kódu ve Web GUI.</p></div>
+    <section id="smerovani" class="sec">
+      <h2>Směrování, které myslí za vás</h2>
+      <p class="muted lead-sm">Pravidla podle masky URL, klíče nebo hlavičky rozhodnou, odkud se obsah vezme a kam se po publikaci pošle dál.</p>
+      <div class="flow">
+        <div class="card step"><span class="k">1 · požadavek</span><b>npm, docker, git</b><span class="muted">/~klíč/, /r/repo/, X-RR-Key</span></div>
+        <div class="arrow" aria-hidden="true">→</div>
+        <div class="card step hot"><span class="k">2 · rr.registry</span><b>always → lokální → notfound</b><span>prefix, glob, regex, klíč, hlavička</span></div>
+        <div class="arrow" aria-hidden="true">→</div>
+        <div class="outs">
+          <div class="card"><b class="c-a">lokálně</b><span class="muted">vlastní balíčky a repozitáře</span></div>
+          <div class="card"><b class="c-ok">z cache</b><span class="muted">do vypršení TTL, při výpadku stale</span></div>
+          <div class="card"><b class="c-info">upstream</b><span class="muted">npmjs, GitHub, firemní registr</span></div>
+          <div class="card"><b>push → dál</b><span class="muted">replikace po každé publikaci</span></div>
+        </div>
       </div>
     </section>
 
-    <section id="routing">
-      <h2>Směrování a cache</h2>
+    <section id="docs" class="sec">
+      <h2>Správa a dokumentace</h2>
       <div class="cols">
-        <div class="card"><h3>Pravidla</h3><p>Routing plugin přesměruje požadavek na jiný registr podle <b>masky URL</b> (prefix, glob, regex),
-          <b>části URL</b>, <b>klíče</b> (<code>/~klic/</code>, hlavička <code>X-RR-Key</code>, <code>?rr_key=</code>), hlavičky požadavku,
-          nebo pokud balíček <b>není nalezen lokálně</b>.</p></div>
-        <div class="card"><h3>Cache</h3><p>Vzdálená metadata i tarbally se ukládají do cache na disku. Další požadavky se servírují
-          přímo z ní až do vypršení platnosti; při výpadku upstreamu se použije i expirovaná kopie.</p></div>
-        <div class="card"><h3>Příklad</h3><pre><code>rr route add name=corp when=always \
-  matchType=prefix pattern=/@corp/ \
-  target=https://npm.corp.example cacheTtl=600
-npm config set registry {{BASE}}/~corp/</code></pre></div>
-      </div>
-    </section>
-
-    <section id="api">
-      <h2>Správa a API</h2>
-      <div class="cols">
-        <div class="card"><h3>Web GUI</h3><p>Grafická správa repozitářů, balíčků, souborů, pravidel, cache, uživatelů a tokenů.</p><a class="btn" href="/admin/">Otevřít administraci</a></div>
-        <div class="card"><h3>REST API</h3><p>Všechny operace jsou dostupné na <code>{{BASE}}/api/v1</code>. Specifikace: <a href="/api/v1/spec">/api/v1/spec</a>, dokumentace: <a href="/docs/API.md">API.md</a>.</p>
+        <div class="card"><h3>Web GUI</h3><p class="muted">Repozitáře, balíčky, git, image, soubory, pravidla, cache, webhooky, úlohy a uživatelé. Tabulky s řazením a seskupením, okna v okně, paleta příkazů ⌘K.</p><a class="btn primary" href="/admin/">Otevřít administraci</a></div>
+        <div class="card"><h3>REST API</h3><p class="muted">Všechny operace na <code>{{BASE}}/api/v1</code>. Specifikace <a href="/api/v1/spec">/api/v1/spec</a>, reference <a href="/docs/API.md">API.md</a>.</p>
           <pre><code>curl -H "Authorization: Bearer $TOKEN" \
   {{BASE}}/api/v1/repos</code></pre></div>
-        <div class="card"><h3>Dokumentace</h3><ul>
+        <div class="card"><h3>Návody</h3><ul class="doclist">
           <li><a href="/docs/README.md">README – přehled</a></li>
           <li><a href="/docs/INSTALL.md">Instalace a Docker</a></li>
           <li><a href="/docs/USAGE.md">Použití a klienti</a></li>
@@ -116,7 +117,9 @@ npm config set registry {{BASE}}/~corp/</code></pre></div>
           <li><a href="/docs/API.md">Reference API</a></li></ul></div>
       </div>
     </section>
-  </main>
-  <footer class="wrap muted">RR Registry v{{VERSION}} · maintainer <b>m5ike</b> · <a href="/api/v1/status">status</a> · <a href="/-/ping">ping</a></footer>
+
+    <footer class="foot"><span class="brand small"><img src="/static/logo.svg" alt="" width="22" height="22"><span>{{TITLE}} v{{VERSION}} · maintainer <b>m5ike</b></span></span>
+      <span class="links"><a href="/api/v1/status">status</a><a href="/-/ping">ping</a><a href="/install.sh">install.sh</a></span></footer>
+  </div>
 </body>
 </html>
