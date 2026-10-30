@@ -3,7 +3,7 @@
   "contract": 1,
   "id": "npm-registry",
   "name": "RR Registry",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Private npm, Docker/OCI and git registry with caching proxy, generic repositories and admin UI.",
   "category": "devtools",
   "icon": "web/assets/logo.svg",
