@@ -70,8 +70,8 @@ function createHandlers(app) {
     },
 
     // ---- auth ----
-    login: ({ body }) => {
-      const id = app.auth.checkCredentials(body.username, body.password);
+    login: async ({ body }) => {
+      const id = await app.auth.checkCredentialsAsync(body.username, body.password);
       if (!id) throw new HttpError(401, 'invalid username or password');
       const t = app.auth.issueToken({ user: id.name, role: id.role, name: body.tokenName || 'login session', kind: 'session', ttlSeconds: Number(body.ttl) || 12 * 3600 });
       app.audit(id, 'login', 'api');

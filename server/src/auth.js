@@ -85,6 +85,33 @@ class Auth {
   }
 
   /** Check credentials of the built-in admin or a stored user. Returns identity or null. */
+  /**
+   * Local users first, then (when attached to the AI Tools Portal) the portal account
+   * with the role the portal granted in this app.
+   */
+  async checkCredentialsAsync(name, password) {
+    const local = this.checkCredentials(name, password);
+    if (local) return local;
+    const portal = this.app.portal;
+    return portal && portal.enabled ? portal.verifyPassword(name, password) : null;
+  }
+
+  /** Basic auth with portal credentials (docker/git/npm CLI): resolved before the synchronous checks. */
+  async portalPreauth(req) {
+    const portal = this.app.portal;
+    if (!portal || !portal.enabled || req._identity !== undefined) return;
+    const basic = /^Basic\s+(.+)$/i.exec(req.headers.authorization || '');
+    if (!basic) return;
+    const raw = Buffer.from(basic[1], 'base64').toString('utf8');
+    const i = raw.indexOf(':');
+    if (i < 0) return;
+    const user = raw.slice(0, i);
+    const pass = raw.slice(i + 1);
+    if (this.checkCredentials(user, pass) || this.tokenIdentity(pass)) return; // local accounts and tokens win
+    const id = await portal.verifyPassword(user, pass);
+    if (id) req._identity = id;
+  }
+
   checkCredentials(name, password) {
     const c = this.app.config;
     if (name === c.adminUser && safeEqual(password, c.adminPassword)) return { name, role: 'admin' };
@@ -184,6 +211,9 @@ class Auth {
       // `docker login -u <user> -p <token>`: a token (or the api_token) as the password
       else id = this.tokenIdentity(pass);
       if (!id) throw new HttpError(401, 'invalid credentials');
+    } else if (this.app.portal && this.app.portal.enabled) {
+      // signed identity of a user logged in to the AI Tools Portal (single sign-on)
+      id = this.app.portal.identityFromHeader(req);
     }
     req._identity = id;
     return id;

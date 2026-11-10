@@ -20,6 +20,7 @@ const { HttpError, NotFoundLocal, sendError, sendJson, readBody, baseUrl } = req
 const { gitAvailable } = require('./util/git');
 const { JsonStore, mkdirp, readJsonFile, rmrf, dirSize } = require('./util/store');
 const { Auth } = require('./auth');
+const { Portal } = require('./portal');
 const { Cache } = require('./cache');
 const { PluginManager } = require('./plugins');
 const { NpmRepo } = require('./repos/npm');
@@ -96,6 +97,7 @@ class App {
     this.spec = JSON.parse(fs.readFileSync(c.specFile, 'utf8'));
     this.cache = new Cache(path.join(c.dataDir, 'cache'));
     this.auth = new Auth(this);
+    this.portal = new Portal(process.env, this.log);
     this.handlers = new Map();
     this.events = new Events(this);
     this.statsStore = new Stats(this);
@@ -422,6 +424,7 @@ class App {
     });
     try {
       let p = url.pathname;
+      await this.auth.portalPreauth(req);
       // AI Tools Portal discovery (contract 1): the manifest of this app, optional for standalone use.
       if (p === '/.well-known/portal-app.json' && (req.method === 'GET' || req.method === 'HEAD')) return this.portalManifest(res);
       if (p === '/api/v1' || p.startsWith('/api/v1/')) return await this.api(req, res, url);

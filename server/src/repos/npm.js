@@ -481,7 +481,7 @@ class NpmRepo {
       }
       if (method !== 'PUT') throw new HttpError(405, 'method not allowed');
       const body = await readJson(req);
-      let id = auth.checkCredentials(name, body.password || '');
+      let id = await auth.checkCredentialsAsync(name, body.password || '');
       if (!id) {
         const settings = this.app.stores.settings.get();
         const exists = name === this.app.config.adminUser || this.app.stores.users.get()[name];
@@ -489,7 +489,8 @@ class NpmRepo {
         auth.createUser({ name, password: body.password, email: body.email, role: 'publisher' });
         id = { name, role: 'publisher' };
       }
-      const t = auth.issueToken({ user: id.name, role: id.role, name: 'npm login', kind: 'npm' });
+      // tokens of portal accounts expire, so revoked portal access cannot live on in an .npmrc forever
+      const t = auth.issueToken({ user: id.name, role: id.role, name: 'npm login', kind: 'npm', ttlSeconds: id.via === 'portal-password' ? 30 * 86400 : 0 });
       this.app.audit(id, 'login', 'npm');
       return sendJson(res, 201, { ok: true, id: `org.couchdb.user:${name}`, token: t.token });
     }

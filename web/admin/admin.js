@@ -1491,17 +1491,23 @@ curl -fsSL ${esc(base)}/install.sh | bash -s -- rr_bash-cli    # jen bash CLI</p
 
   async function start() {
     makeClient(LS.get('server'), LS.get('token'));
-    if (!rr.token) return showLogin();
-    try {
-      me = await rr.whoami();
-    } catch (e) {
-      LS.set('token', '');
-      return showLogin(e.status === 401 ? '' : e.message);
+    if (!rr.token) {
+      // AI Tools Portal single sign-on: behind the portal gateway the logged-in portal user is
+      // identified by the gateway (signed header) — no token and no login form needed.
+      me = await rr.whoami().catch(() => null);
+      if (!me || me.via !== 'portal') return showLogin();
+    } else {
+      try {
+        me = await rr.whoami();
+      } catch (e) {
+        LS.set('token', '');
+        return showLogin(e.status === 401 ? '' : e.message);
+      }
     }
     $('#login').classList.add('hidden');
     $('#app').classList.remove('hidden');
     $('#who').textContent = me.name;
-    $('#whoRole').textContent = `${me.role}${me.readonly ? ' · jen čtení' : ''}`;
+    $('#whoRole').textContent = `${me.role}${me.readonly ? ' · jen čtení' : ''}${me.via === 'portal' ? ' · portál' : ''}`;
     $('#avatar').textContent = me.name.slice(0, 2);
     const st = await rr.status().catch(() => null);
     if (st) { $('#serverInfo').textContent = `${st.title} ${st.version} · ${st.registry}`; document.title = `${st.title} – administrace`; }
@@ -1514,6 +1520,8 @@ curl -fsSL ${esc(base)}/install.sh | bash -s -- rr_bash-cli    # jen bash CLI</p
   }
 
   function logout() {
+    // portal SSO: log out of the portal (ends the session in every attached app)
+    if (me && me.via === 'portal') { location.href = '/_portal/auth/logout'; return; }
     if (rr && rr.token) rr.logout().catch(() => {});
     LS.set('token', '');
     me = null;
