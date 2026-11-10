@@ -17,6 +17,8 @@ COPY clients ./clients
 COPY tools ./tools
 COPY docs ./docs
 COPY README.md ./
+# AI Tools Portal manifest, served at /.well-known/portal-app.json
+COPY portal.app.json ./
 
 # "compile" step: generate client libraries from api/spec.json and pack client packages
 RUN node tools/build.js && mkdir -p /data && chown -R node:node /data /app/dist /app/docs

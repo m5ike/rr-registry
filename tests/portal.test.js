@@ -123,3 +123,11 @@ test('admin login form offers the portal sign-in only when attached', async () =
     app.portal = saved;
   }
 });
+
+test('the Docker image ships the portal manifest (served at /.well-known/portal-app.json)', () => {
+  const dockerfile = fs.readFileSync(path.join(__dirname, '..', 'Dockerfile'), 'utf8');
+  assert.match(dockerfile, /^COPY portal\.app\.json \.\/$/m);
+  const ignored = fs.readFileSync(path.join(__dirname, '..', '.dockerignore'), 'utf8').split('\n').map((l) => l.trim());
+  assert.ok(!ignored.includes('portal.app.json'));
+});
+
