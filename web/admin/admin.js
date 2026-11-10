@@ -1444,6 +1444,8 @@ curl -fsSL ${esc(base)}/install.sh | bash -s -- rr_bash-cli    # jen bash CLI</p
   }
 
   function showLogin(err) {
+    // attached to the AI Tools Portal: one click signs in with the portal account (single sign-on)
+    $('#portalLogin').classList.toggle('hidden', !CFG.portal);
     wm.closeAll();
     $('#app').classList.add('hidden');
     $('#login').classList.remove('hidden');

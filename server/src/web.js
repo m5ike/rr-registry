@@ -76,7 +76,9 @@ function createWeb(app) {
     if (p.startsWith('/admin/')) {
       const rel = p.slice('/admin/'.length) || 'index.html';
       if (rel === 'config.js') {
-        send(res, 200, 'window.RR_CONFIG = { baseUrl: "" };\n', { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-store' });
+        // portal: attached to the AI Tools Portal -> the login form offers "sign in with the portal account"
+        const portal = !!(app.portal && app.portal.enabled);
+        send(res, 200, `window.RR_CONFIG = { baseUrl: "", portal: ${portal} };\n`, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-store' });
         return true;
       }
       const data = rel === 'rr-client.js' ? clientJs() : fileOr(safeJoin(path.join(c.webDir, 'admin'), rel));

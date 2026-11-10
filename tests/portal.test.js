@@ -112,3 +112,14 @@ test('npm login and web login accept portal accounts', async () => {
   assert.ok(web.status >= 200 && web.status < 300, `login status ${web.status}`);
   assert.strictEqual(web.json.user.role, 'publisher');
 });
+
+test('admin login form offers the portal sign-in only when attached', async () => {
+  assert.match((await req('GET', '/admin/config.js')).text, /portal: true/);
+  const saved = app.portal;
+  app.portal = new Portal({});
+  try {
+    assert.match((await req('GET', '/admin/config.js')).text, /portal: false/);
+  } finally {
+    app.portal = saved;
+  }
+});
