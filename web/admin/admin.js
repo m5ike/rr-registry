@@ -1384,9 +1384,16 @@ git push rr main      # ${repo.autoCreate === false ? 'automatické vytvoření 
     });
   }
 
+  // ---------------------------------------------------------------- settings (general, export, import)
+  const settingsTabs = (tab) => `<div class="tabs">${[['general', 'Obecné', 'gear'], ['export', 'Export', 'download'], ['import', 'Import', 'upload']].map(([k, l, ic]) => `<a href="#/settings?tab=${k}" class="tab-link${tab === k ? ' active' : ''}">${icon(ic, 15)}${l}</a>`).join('')}</div>`;
+
   views.settings = async () => {
+    const q = new URLSearchParams(location.hash.split('?')[1] || '');
+    const tab = q.get('tab') || 'general';
+    if (tab === 'export') return settingsExport();
+    if (tab === 'import') return q.get('id') ? importPlan(q.get('id')) : settingsImport();
     const [s, repos, plugins] = await Promise.all([rr.getSettings(), rr.listRepos(), rr.listPlugins()]);
-    const v = setView('Nastavení', `
+    const v = setView('Nastavení', `${settingsTabs(tab)}
       <div class="card"><form class="form" id="f">
         <label>Název registru <input name="title" value="${esc(s.title)}"></label>
         <label>Výchozí repozitář (kořen /) <select name="defaultRepo">${repos.map((r) => `<option${r.name === s.defaultRepo ? ' selected' : ''}>${esc(r.name)}</option>`).join('')}</select></label>
@@ -1401,13 +1408,241 @@ git push rr main      # ${repo.autoCreate === false ? 'automatické vytvoření 
       <div class="card"><h2>Pluginy</h2>${plugins.map((p) => `<label class="check"><input type="checkbox" data-plugin="${esc(p.name)}" ${p.enabled ? 'checked' : ''}> <b>${esc(p.name)}</b> – ${esc(p.description)}</label>`).join('')}
         <p class="muted small">Vlastní pluginy lze přidat do <code>data/plugins/*.js</code>.</p></div>
       <div class="row"><button class="btn primary" id="save">Uložit nastavení</button></div>
-      <div class="card"><h2>Konfigurace serveru (.env / make menuconfig)</h2><p class="muted">Port, heslo administrátora a API token se nastavují příkazem <code>make menuconfig</code> a projeví se po restartu kontejneru (<code>make restart</code>).</p></div>`, 'gear');
+      <div class="card"><h2>Konfigurace serveru (.env / make menuconfig)</h2><p class="muted">Port, heslo administrátora a API token se nastavují příkazem <code>make menuconfig</code> a projeví se po restartu kontejneru (<code>make restart</code>). Údaje převzaté importem (záložka Import) mají přednost a ukládají se do <code>data/config/server.json</code>.</p></div>`, 'gear');
     $('#save', v).onclick = async () => {
       const d = formData($('#f', v));
       d.plugins = $$('[data-plugin]', v).filter((c) => c.checked).map((c) => c.dataset.plugin);
       await run(() => rr.updateSettings(d), 'Nastavení uloženo');
     };
   };
+
+  async function settingsExport() {
+    const [desc, exports] = await Promise.all([rr.transferSections(), rr.listExports()]);
+    const v = setView('Nastavení', `${settingsTabs('export')}
+      <div class="card"><h2>${icon('lock', 17)}Šifrovaný export</h2>
+        <p class="muted" style="margin:0 0 12px">Export obsahuje vybrané části registru v pevném pořadí (nejdřív to, na čem ostatní závisí) a je zašifrovaný heslem
+          (AES-256-GCM, klíč z hesla přes scrypt). Bez hesla ho nelze přečíst ani upravit. Přihlašovací údaje, hesla, tokeny a klíče se exportují jen v sekcích označených <span class="badge warn">tajné</span>.</p>
+        <div class="xsections">${desc.sections.map((sec, i) => `
+          <details class="xsec"><summary><label class="check" onclick="event.stopPropagation()"><input type="checkbox" data-sec="${sec.id}"${sec.optional || !sec.items.length ? '' : ' checked'}${sec.items.length ? '' : ' disabled'}> <span class="pill">${i + 1}</span> <b>${esc(sec.title)}</b></label>
+            <span class="muted small">${esc(sec.description)}</span>${sec.secret ? ' <span class="badge warn">tajné</span>' : ''}<span class="spacer"></span>
+            <span class="mono small muted">${sec.items.length} ${sec.bytes ? `· ${fmtBytes(sec.bytes)}` : ''}</span></summary>
+            <div class="xitems">${sec.items.map((it) => `<label class="check"><input type="checkbox" data-item="${sec.id}" value="${esc(it.id)}"${sec.optional ? '' : ' checked'}> ${esc(it.title)} ${it.bytes ? `<span class="mono small muted">${fmtBytes(it.bytes)} · ${it.files} souborů</span>` : ''}</label>`).join('') || '<span class="muted small">nic k exportu</span>'}</div></details>`).join('')}</div>
+        <form class="form" id="xf" style="margin-top:14px" autocomplete="off">
+          <label>Heslo exportu (min. 8 znaků) <input type="password" name="passphrase" autocomplete="new-password" required minlength="8"></label>
+          <label>Heslo znovu <input type="password" name="passphrase2" autocomplete="new-password" required></label>
+          <label style="grid-column:1/-1">Poznámka <input name="note" placeholder="např. záloha před aktualizací"></label>
+        </form>
+        <div class="row" style="margin-top:12px"><button type="button" class="btn primary" id="doExport">${icon('download', 15)}Vytvořit šifrovaný export</button><span class="muted small" id="xstatus"></span></div>
+      </div>
+      <div id="xt"></div>`, 'gear');
+    $$('[data-sec]', v).forEach((cb) => { cb.onchange = () => $$(`[data-item="${cb.dataset.sec}"]`, v).forEach((i) => { i.checked = cb.checked; }); });
+    $('#doExport', v).onclick = async () => {
+      const f = formData($('#xf', v));
+      if (f.passphrase.length < 8) return toast('Heslo musí mít aspoň 8 znaků.', true);
+      if (f.passphrase !== f.passphrase2) return toast('Hesla se neshodují.', true);
+      const sections = [];
+      const items = {};
+      for (const sec of desc.sections) {
+        const all = $$(`[data-item="${sec.id}"]`, v);
+        const on = all.filter((x) => x.checked).map((x) => x.value);
+        if (!on.length) continue;
+        sections.push(sec.id);
+        if (on.length < all.length) items[sec.id] = on;
+      }
+      if (!sections.length) return toast('Vyberte, co exportovat.', true);
+      const btn = $('#doExport', v);
+      btn.disabled = true;
+      $('#xstatus', v).textContent = 'Exportuji a šifruji…';
+      try {
+        const r = await run(() => rr.createExport({ passphrase: f.passphrase, sections, items, note: f.note }), 'Export vytvořen');
+        $('#xstatus', v).textContent = `${r.file} · ${fmtBytes(r.size)} · ${(r.ms / 1000).toFixed(1)} s`;
+        route();
+      } catch { btn.disabled = false; $('#xstatus', v).textContent = ''; }
+    };
+    table('#xt', {
+      id: 'exports', rows: exports, rowKey: (e) => e.id, placeholder: 'Hledat export…', sort: { key: 'created', dir: -1 }, empty: 'Zatím žádné exporty.',
+      columns: [
+        { key: 'file', label: 'Soubor', render: (e) => cellMain('npm', e.file, e.note || `sha256 ${e.sha256.slice(0, 16)}…`, 'lock') },
+        { key: 'created', label: 'Vytvořen', render: (e) => when(e.created) },
+        { key: 'size', label: 'Velikost', align: 'right', render: (e) => `<span class="mono">${fmtBytes(e.size)}</span>` },
+        { key: 'sections', label: 'Obsah', sort: false, render: (e) => e.sections.map((s) => `<span class="badge plain">${esc(s.title)} ${s.items}</span>`).join(' ') },
+        { key: 'createdBy', label: 'Autor', toggle: true },
+        { key: 'act', label: '', sort: false, align: 'right', render: (e) => `${iconBtn(`data-dl="${esc(e.id)}" data-file="${esc(e.file)}"`, 'download', 'Stáhnout')}${iconBtn(`data-del="${esc(e.id)}"`, 'trash', 'Smazat', 'danger')}` },
+      ],
+      onRender: (el) => {
+        $$('[data-dl]', el).forEach((b) => { b.onclick = async () => { toast('Stahuji…'); download(await run(() => rr.downloadExport(b.dataset.dl)), b.dataset.file); }; });
+        $$('[data-del]', el).forEach((b) => { b.onclick = async () => { if (await confirmBox('Smazat export ze serveru?')) { await run(() => rr.deleteExport(b.dataset.del), 'Smazáno'); route(); } }; });
+      },
+    });
+  }
+
+  const IMPORT_STATUS = { received: ['plain', 'přijato'], locked: ['warn', 'zamčeno heslem'], ready: ['blue', 'připraveno'], running: ['blue', 'probíhá'], done: ['ok', 'dokončeno'], failed: ['off', 'dokončeno s chybami'] };
+  const statusBadge = (s) => `<span class="badge ${(IMPORT_STATUS[s] || ['plain'])[0]}">${esc((IMPORT_STATUS[s] || [0, s])[1])}</span>`;
+  const sourceLabel = (src) => (src.kind === 'remote' ? `${src.mode === 'server' ? 'server' : 'URL'} ${src.url}` : `soubor ${src.name || ''}`);
+
+  async function settingsImport() {
+    const imports = await rr.listImports();
+    const v = setView('Nastavení', `${settingsTabs('import')}
+      <div class="widgets">
+        <article class="card widget w6"><h2>${icon('upload', 17)}Import ze souboru</h2>
+          <p class="muted small" style="margin:0">Soubor <code>.rrx</code> z exportu. Po nahrání ho odemknete heslem a vyberete, co se má importovat.</p>
+          <label>Soubor exportu <input type="file" id="ifile" accept=".rrx,application/octet-stream"></label>
+          <label>Heslo exportu <input type="password" id="ipass" autocomplete="off"></label>
+          <div class="row"><button type="button" class="btn primary" id="iup">${icon('upload', 15)}Nahrát a odemknout</button></div>
+        </article>
+        <article class="card widget w6"><h2>${icon('link', 17)}Vzdálený import z URL</h2>
+          <p class="muted small" style="margin:0">Každou operaci vzdáleného importu musíte před spuštěním jednotlivě schválit.</p>
+          <form class="form" id="rf" autocomplete="off">
+            <label>Zdroj <select name="mode"><option value="server">jiný RR Registry (vytvoří export)</option><option value="file">URL souboru .rrx</option></select></label>
+            <label>URL <input name="url" placeholder="https://registry2.firma.cz"></label>
+            <label>API token zdroje <input name="token" type="password" placeholder="admin token vzdáleného serveru"></label>
+            <label>Heslo exportu <input name="passphrase" type="password"></label>
+          </form>
+          <div class="row"><button type="button" class="btn primary" id="rimp">${icon('download', 15)}Stáhnout a připravit plán</button></div>
+        </article>
+      </div>
+      <div id="it"></div>`, 'gear');
+    $('#iup', v).onclick = async () => {
+      const f = $('#ifile', v).files[0];
+      if (!f) return toast('Vyberte soubor exportu.', true);
+      toast('Nahrávám…');
+      const st = await run(async () => rr.uploadImport(await readFile(f)));
+      const pass = $('#ipass', v).value;
+      if (pass) await run(() => rr.unlockImport(st.id, { passphrase: pass }), 'Odemčeno').catch(() => {});
+      location.hash = `#/settings?tab=import&id=${st.id}`;
+    };
+    $('#rimp', v).onclick = async () => {
+      const d = formData($('#rf', v));
+      if (!d.url) return toast('Zadejte URL.', true);
+      toast(d.mode === 'server' ? 'Žádám vzdálený server o export…' : 'Stahuji…');
+      const st = await run(() => rr.remoteImport(d));
+      location.hash = `#/settings?tab=import&id=${st.id}`;
+    };
+    table('#it', {
+      id: 'imports', rows: imports, rowKey: (i) => i.id, placeholder: 'Hledat import…', sort: { key: 'created', dir: -1 }, empty: 'Žádné importy.',
+      columns: [
+        { key: 'source', label: 'Zdroj', value: (i) => sourceLabel(i.source), render: (i) => cellMain(i.source.kind === 'remote' ? 'docker' : 'npm', sourceLabel(i.source), i.header ? `export z ${fmtDate(i.header.created)} · v${i.header.appVersion}` : '', i.source.kind === 'remote' ? 'link' : 'upload') },
+        { key: 'created', label: 'Vytvořen', render: (i) => when(i.created) },
+        { key: 'status', label: 'Stav', render: (i) => statusBadge(i.status) },
+        { key: 'ops', label: 'Operací', align: 'right' },
+        { key: 'size', label: 'Velikost', align: 'right', render: (i) => `<span class="mono">${fmtBytes(i.size)}</span>` },
+        { key: 'act', label: '', sort: false, align: 'right', render: (i) => iconBtn(`data-del="${esc(i.id)}"`, 'trash', 'Zahodit', 'danger') },
+      ],
+      onRow: (i) => { location.hash = `#/settings?tab=import&id=${i.id}`; },
+      onRender: (el) => { $$('[data-del]', el).forEach((b) => { b.onclick = async () => { await run(() => rr.deleteImport(b.dataset.del), 'Zahozeno'); route(); }; }); },
+    });
+  }
+
+  const ACTION = { create: ['ok', 'vytvořit'], overwrite: ['warn', 'přepsat'], merge: ['warn', 'sloučit'], skip: ['plain', 'přeskočit'], extract: ['blue', 'rozbalit'] };
+
+  async function importPlan(id) {
+    let st = await rr.getImport(id);
+    const v = setView('Nastavení', `${settingsTabs('import')}<div id="ip"></div>`, 'gear');
+    const host = $('#ip', v);
+    const update = async (body, msg) => { st = await run(() => rr.updateImport(id, body), msg); draw(); };
+    function draw() {
+      const p = st.plan;
+      const remote = st.source.kind === 'remote';
+      const head = `<div class="card"><div class="row between"><h2 style="margin:0">${icon(remote ? 'link' : 'upload', 17)}Import: ${esc(sourceLabel(st.source))}</h2>${statusBadge(st.status)}</div>
+        <p class="muted small" style="margin:8px 0 0">${st.manifest ? `Export „${esc(st.manifest.source.title || '')}“ z ${esc(fmtDate(st.manifest.created))} · RR Registry ${esc(st.manifest.appVersion)} · autor ${esc(st.manifest.createdBy || '')}${st.manifest.note ? ` · ${esc(st.manifest.note)}` : ''}` : st.header ? `Export z ${esc(fmtDate(st.header.created))} · RR Registry ${esc(st.header.appVersion)}` : ''} · ${fmtBytes(st.size)}</p>
+        <div class="row" style="margin-top:10px"><a class="btn small ghost" href="#/settings?tab=import">${icon('up', 15)}Všechny importy</a><span class="spacer"></span><button type="button" class="btn small danger" id="discard">${icon('trash', 15)}Zahodit import</button></div></div>`;
+      if (st.status === 'locked') {
+        host.innerHTML = `${head}<div class="card"><h2>${icon('lock', 17)}Odemknout heslem</h2><form class="row" id="uf"><input type="password" id="up" placeholder="heslo exportu" style="max-width:320px" autocomplete="off"><button class="btn primary">Odemknout</button></form></div>`;
+        $('#uf', host).onsubmit = async (e) => { e.preventDefault(); st = await run(() => rr.unlockImport(id, { passphrase: $('#up', host).value }), 'Odemčeno'); draw(); };
+        bindHead();
+        return;
+      }
+      const done = st.status === 'done' || st.status === 'failed';
+      const ws = st.options.target.mode === 'workspace';
+      const results = Object.fromEntries((st.results || []).map((r) => [r.id, r]));
+      const secTitle = Object.fromEntries(st.sections.map((s) => [s.id, s.title]));
+      host.innerHTML = `${head}
+        ${remote && !done ? `<div class="card" style="border-color:var(--warn-line)"><b>${icon('alert', 16)} Vzdálený import</b><p class="muted small" style="margin:6px 0 0">Data pocházejí z <code>${esc(st.source.url)}</code>. Než import spustíte, schvalte každou operaci (sloupec Schválení) – neschválené operace se neprovedou.</p></div>` : ''}
+        ${done ? '' : `<div class="card"><h2>${icon('gear', 17)}Možnosti</h2><div class="form">
+          <label>Když položka už existuje <select id="conflict"><option value="skip"${st.options.conflict === 'skip' ? ' selected' : ''}>ponechat stávající (přeskočit)</option><option value="overwrite"${st.options.conflict === 'overwrite' ? ' selected' : ''}>přepsat / sloučit</option></select></label>
+          <label>Cíl <select id="tmode"><option value="live"${ws ? '' : ' selected'}>do běžícího registru</option><option value="workspace"${ws ? ' selected' : ''}>do workspace (jen rozbalit soubory)</option></select></label>
+          <label${ws ? '' : ' class="hidden"'} id="wsl">Cesta workspace (v data/workspaces/) <input id="wsp" value="${esc(st.options.target.path || '')}" placeholder="${esc(st.id)}"></label></div>
+          <div class="row" style="margin-top:12px"><button type="button" class="btn small" id="deps">${icon('layers', 15)}Doplnit chybějící závislosti</button>
+            <button type="button" class="btn small" id="selAll">Vybrat vše</button><button type="button" class="btn small" id="selNone">Zrušit výběr</button>
+            ${remote ? `<button type="button" class="btn small primary" id="apprAll">${icon('check', 15)}Schválit všechny vybrané</button>` : ''}</div></div>`}
+        <div class="kpis">
+          <article class="kpi"><div class="kpi-top"><span class="tile npm">${icon('layers', 18)}</span>Vybráno operací</div><div class="kpi-v">${p.selected}</div><div class="kpi-d">z ${st.ops.length} · ${fmtBytes(p.bytes)}</div></article>
+          <article class="kpi"><div class="kpi-top"><span class="tile ${p.blocked.length ? 'x' : 'git'}">${icon(p.blocked.length ? 'alert' : 'check', 18)}</span>Závislosti</div><div class="kpi-v">${p.blocked.length ? p.blocked.length : 'OK'}</div><div class="kpi-d">${p.blocked.length ? 'blokovaných operací' : 'vše potřebné je vybráno nebo existuje'}${p.missingInBundle.length ? ` · v exportu chybí: ${esc(p.missingInBundle.join(', '))}` : ''}</div></article>
+          <article class="kpi"><div class="kpi-top"><span class="tile docker">${icon('check', 18)}</span>Neschváleno</div><div class="kpi-v">${p.unapproved.length}</div><div class="kpi-d">${remote ? 'vzdálený import vyžaduje schválení' : 'místní soubor – schváleno výběrem'}</div></article>
+        </div>
+        <div id="ot"></div>
+        ${done ? `<div class="card"><h2>${icon(st.status === 'done' ? 'check' : 'alert', 17)}Výsledek importu</h2><p class="muted" style="margin:0">${st.results.filter((r) => r.status === 'done').length} hotovo · ${st.results.filter((r) => r.status === 'skipped').length} přeskočeno · ${st.results.filter((r) => r.status === 'failed').length} chyb · dokončeno ${esc(fmtDate(st.finished))}</p></div>`
+    : `<div class="card"><h2>${icon('folder', 17)}Cílové cesty</h2><p class="muted small" style="margin:0 0 8px">Importované soubory a konfigurace budou zapsány sem (datový adresář <code>${esc(st.dataDir)}</code>):</p>
+          <pre>${esc(p.targets.join('\n') || '(nic)')}</pre>
+          <label class="check" style="margin-top:10px"><input type="checkbox" id="confirm"> Potvrzuji cílové cesty a pořadí operací</label>
+          <div class="row" style="margin-top:12px"><button type="button" class="btn primary" id="runImp" disabled>${icon('play', 15)}Spustit import (${p.selected})</button><span class="muted small" id="runWhy"></span></div></div>`}`;
+      table($('#ot', host), {
+        id: 'importops', rows: st.ops, rowKey: (o) => o.id, placeholder: 'Hledat operaci…', group: 'section', pageSize: 500,
+        groups: [{ key: 'section', label: 'sekce', value: (o) => o.section, order: (a, b) => p.order.indexOf(a) - p.order.indexOf(b), render: (k) => `<b>${p.order.indexOf(k) + 1}. ${esc(secTitle[k] || k)}</b>` }, { key: 'action', label: 'akce', value: (o) => o.action }],
+        columns: [
+          { key: 'selected', label: '', sort: false, render: (o) => `<input type="checkbox" data-sel="${esc(o.id)}" aria-label="Vybrat ${esc(o.title)}"${o.selected ? ' checked' : ''}${done ? ' disabled' : ''}>` },
+          { key: 'title', label: 'Položka', render: (o) => `${cellMain(o.section === 'content' ? 'git' : o.section === 'repos' ? 'npm' : 'x', o.title, o.warnings && o.warnings.length ? `⚠ ${o.warnings.join(' · ')}` : o.section, o.section === 'content' ? 'folder' : o.section === 'repos' ? 'repo' : o.section === 'users' ? 'users' : o.section === 'tokens' || o.section === 'server' || o.section === 'secret' ? 'key' : 'file')}${o.section === 'repos' && !done ? `<input class="rename" data-ren="${esc(o.key)}" value="${esc(o.rename || '')}" placeholder="nový název (volitelně)">` : ''}` },
+          { key: 'action', label: 'Akce', render: (o) => (done || ws ? `<span class="badge ${ACTION[o.action][0]}">${ACTION[o.action][1]}</span>` : `<select data-ovr="${esc(o.id)}" class="inline-select"><option value="">${ACTION[o.action][1]}${o.override ? '' : ' (výchozí)'}</option>${o.exists ? '<option value="overwrite">přepsat</option><option value="skip">přeskočit</option>' : ''}</select>`) },
+          { key: 'target', label: 'Cíl', toggle: true, hidden: true, render: (o) => `<code class="small">${esc(o.target)}</code>` },
+          { key: 'size', label: 'Velikost', align: 'right', render: (o) => (o.size ? `<span class="mono">${fmtBytes(o.size)}</span>` : '') },
+          { key: 'deps', label: 'Závislosti', sort: false, render: (o) => (o.deps || []).map((d) => `<span class="badge ${d.selected ? 'ok' : d.inBundle ? 'warn' : 'off'}" title="${d.selected ? 'vybráno' : d.inBundle ? 'v exportu, nevybráno' : 'chybí'}">${esc(d.title)}</span>`).join(' ') || '<span class="muted small">–</span>' },
+          { key: 'approved', label: 'Schválení', value: (o) => (o.approved ? 1 : 0), render: (o) => (done ? '' : o.approved ? `<button type="button" class="btn small ghost" data-revoke="${esc(o.id)}" title="Zrušit schválení">${icon('check', 14)}schváleno</button>` : `<button type="button" class="btn small" data-approve="${esc(o.id)}">Schválit</button>`) },
+          { key: 'status', label: 'Stav', value: (o) => (results[o.id] || {}).status || '', render: (o) => { const r = results[o.id]; if (r) return `<span class="badge ${r.status === 'done' ? 'ok' : r.status === 'failed' ? 'off' : 'plain'}" title="${esc(r.message)}">${esc(r.status === 'done' ? 'hotovo' : r.status === 'failed' ? 'chyba' : 'přeskočeno')}</span> <span class="small muted">${esc(r.message)}</span>`; return o.blocked ? '<span class="badge off">blokováno</span>' : o.selected ? '<span class="badge blue">připraveno</span>' : '<span class="muted small">nevybráno</span>'; } },
+        ],
+        rowClass: (o) => (o.selected ? '' : 'dim'),
+        onRender: (el) => {
+          $$('[data-sel]', el).forEach((c) => { c.onchange = () => update({ select: { [c.dataset.sel]: c.checked } }); });
+          $$('[data-ovr]', el).forEach((sel) => { sel.onchange = () => update({ overrides: { [sel.dataset.ovr]: sel.value || null } }); });
+          $$('[data-ren]', el).forEach((inp) => { inp.onchange = () => update({ renames: { [inp.dataset.ren]: inp.value.trim() } }, 'Název změněn'); });
+          $$('[data-approve]', el).forEach((b) => { b.onclick = () => update({ approve: [b.dataset.approve] }); });
+          $$('[data-revoke]', el).forEach((b) => { b.onclick = () => update({ revoke: [b.dataset.revoke] }); });
+        },
+      });
+      bindHead();
+      if (done) return;
+      $('#conflict', host).onchange = (e) => update({ conflict: e.target.value });
+      $('#tmode', host).onchange = (e) => update({ target: { mode: e.target.value, path: $('#wsp', host).value } });
+      $('#wsp', host).onchange = (e) => update({ target: { mode: 'workspace', path: e.target.value } });
+      $('#deps', host).onclick = () => update({ includeDependencies: true }, 'Závislosti doplněny');
+      $('#selAll', host).onclick = () => update({ select: Object.fromEntries(st.sections.map((s) => [s.id, true])) });
+      $('#selNone', host).onclick = () => update({ select: Object.fromEntries(st.sections.map((s) => [s.id, false])) });
+      const appr = $('#apprAll', host);
+      if (appr) appr.onclick = async () => { if (await confirmBox(`Schválit všech ${p.selected} vybraných operací ze vzdáleného zdroje ${st.source.url}?`)) update({ approve: 'selected' }, 'Schváleno'); };
+      const runBtn = $('#runImp', host);
+      const why = () => {
+        const reasons = [];
+        if (!$('#confirm', host).checked) reasons.push('potvrďte cílové cesty');
+        if (p.blocked.length) reasons.push(`${p.blocked.length} operací má nesplněné závislosti`);
+        if (p.unapproved.length) reasons.push(`${p.unapproved.length} operací není schváleno`);
+        if (!p.selected) reasons.push('nic není vybráno');
+        runBtn.disabled = reasons.length > 0;
+        $('#runWhy', host).textContent = reasons.join(' · ');
+      };
+      $('#confirm', host).onchange = why;
+      why();
+      runBtn.onclick = async () => {
+        if (!(await confirmBox(`Spustit import ${p.selected} operací${ws ? ' do workspace' : ' do běžícího registru'}?`))) return;
+        runBtn.disabled = true;
+        $('#runWhy', host).textContent = 'Importuji…';
+        const r = await run(() => rr.runImport(id, { confirmPaths: true })).catch(() => null);
+        if (r) toast(r.status === 'done' ? 'Import dokončen' : 'Import dokončen s chybami', r.status !== 'done');
+        try {
+          st = await rr.getImport(id);
+          draw();
+        } catch (e) {
+          if (e.status !== 401) throw e;
+          // imported server credentials replaced the ones this page signed in with
+          toast('Importované přihlašovací údaje platí – přihlaste se znovu.', true);
+          setTimeout(logout, 1500);
+        }
+      };
+    }
+    function bindHead() {
+      $('#discard', host).onclick = async () => { if (await confirmBox('Zahodit import? Dočasná data budou smazána.')) { await run(() => rr.deleteImport(id), 'Zahozeno'); location.hash = '#/settings?tab=import'; } };
+    }
+    draw();
+    return v;
+  }
 
   views.clients = async () => {
     const list = await rr.listClients();

@@ -303,3 +303,19 @@ td.nw { white-space: nowrap; }
   #newBtn span { display: none; }
   #newBtn { width: 42px; padding: 0; }
 }
+
+/* ---------------------------------------------------------------- settings: export / import */
+.tabs .tab-link { display: inline-flex; align-items: center; gap: 7px; padding: 10px 12px; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; font-weight: 500; }
+.tabs .tab-link:hover { color: var(--text); }
+.tabs .tab-link.active { color: var(--text); border-bottom-color: var(--accent); }
+.xsections { display: flex; flex-direction: column; border: 1px solid var(--line-soft); border-radius: var(--r); overflow: hidden; }
+.xsec { border-bottom: 1px solid var(--line-soft); }
+.xsec:last-child { border-bottom: 0; }
+.xsec summary { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; list-style: none; flex-wrap: wrap; }
+.xsec summary::-webkit-details-marker { display: none; }
+.xsec summary:hover { background: var(--hover); }
+.xsec[open] summary { background: var(--bg2); }
+.xitems { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px 16px; padding: 10px 14px 14px 44px; }
+.dt tr.dim td { opacity: 0.55; }
+.rename { margin-top: 6px; min-height: 30px; padding: 4px 8px; font-size: 12px; max-width: 260px; }
+.inline-select { width: auto; min-height: 30px; padding: 3px 8px; font-size: 13px; }

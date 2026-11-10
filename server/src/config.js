@@ -1,9 +1,11 @@
 'use strict';
-// Configuration: defaults <- .env file (project root) <- process environment <- overrides.
+// Configuration: defaults <- .env file (project root) <- process environment <- data/config/server.json (imported) <- overrides.
 const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..', '..');
+/** Server settings that can be exported / imported (Settings -> Export / Import). */
+const SERVER_KEYS = ['adminUser', 'adminPassword', 'apiToken', 'publicUrl'];
 
 function parseEnvFile(file) {
   const out = {};
@@ -41,10 +43,16 @@ function loadConfig(overrides = {}) {
     distDir: path.join(ROOT, 'dist'),
     webDir: path.join(ROOT, 'web'),
     specFile: path.join(ROOT, 'api', 'spec.json'),
-    ...overrides,
   };
+  // credentials imported from an export (Settings -> Import) win over .env / environment
+  const dataDir = overrides.dataDir || cfg.dataDir;
+  try {
+    const imported = JSON.parse(fs.readFileSync(path.join(dataDir, 'config', 'server.json'), 'utf8'));
+    for (const k of SERVER_KEYS) if (imported[k] !== undefined && imported[k] !== '') cfg[k] = imported[k];
+  } catch { /* none imported */ }
+  Object.assign(cfg, overrides);
   cfg.maxBody = cfg.maxBodyMb * 1024 * 1024;
   return cfg;
 }
 
-module.exports = { loadConfig, parseEnvFile, ROOT };
+module.exports = { loadConfig, parseEnvFile, ROOT, SERVER_KEYS };

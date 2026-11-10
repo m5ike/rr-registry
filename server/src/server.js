@@ -21,6 +21,7 @@ const { gitAvailable } = require('./util/git');
 const { JsonStore, mkdirp, readJsonFile, rmrf, dirSize } = require('./util/store');
 const { Auth } = require('./auth');
 const { Portal } = require('./portal');
+const { Transfer } = require('./transfer');
 const { Cache } = require('./cache');
 const { PluginManager } = require('./plugins');
 const { NpmRepo } = require('./repos/npm');
@@ -98,6 +99,7 @@ class App {
     this.cache = new Cache(path.join(c.dataDir, 'cache'));
     this.auth = new Auth(this);
     this.portal = new Portal(process.env, this.log);
+    this.transfer = new Transfer(this);
     this.handlers = new Map();
     this.events = new Events(this);
     this.statsStore = new Stats(this);

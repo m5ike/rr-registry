@@ -73,6 +73,19 @@ Git repozitáře (klonování: git clone <server>/git/<název>.git)
 Docker image
   image list <repo> | tags <repo> <image> | rm <repo> <image> <tag> | gc <repo> [--untagged]
 
+Export a import (šifrovaný přenos celého registru)
+  export sections                       co lze exportovat (v pořadí exportu/importu)
+  export create [sekce,…] [--note T]    vytvoří šifrovaný export (heslo se zeptá)
+  export list | download <id> [soubor] | rm <id>
+  import file <soubor.rrx>              nahraje export a odemkne ho (heslo se zeptá)
+  import url <url> [--server] [--token T]  vzdálený import (jiný RR server nebo URL souboru)
+  import list | show <id> | unlock <id> | rm <id>
+  import select <id> položka=on|off…    položka = operace (repos:internal) nebo sekce (users)
+  import set <id> conflict=skip|overwrite target=live|workspace path=… rename.<repo>=<nový>
+  import deps <id>                      doplní chybějící závislosti z exportu
+  import approve <id> [operace…|--all]  schválení (vzdálený import)
+  import run <id> --confirm-paths       spustí import
+
 Webhooky, události, replikace, úlohy
   webhook list | add name=.. url=.. [events=npm.*,git.push] [repos=..] [secret=..] [format=json|slack|discord]
   webhook update <id> key=value... | rm <id> | test <id> | deliveries [id]
@@ -420,6 +433,96 @@ cmd_replication() {
   esac
 }
 
+ask_pass() {
+  local p p2
+  if [ -n "${RR_PASSPHRASE:-}" ]; then printf '%s' "$RR_PASSPHRASE"; return; fi
+  read -r -s -p "Heslo exportu: " p </dev/tty; echo >&2
+  if [ "${1:-}" = confirm ]; then read -r -s -p "Heslo znovu: " p2 </dev/tty; echo >&2; [ "$p" = "$p2" ] || rr_die "hesla se neshodují"; fi
+  printf '%s' "$p"
+}
+
+print_plan() {
+  if rr_have_jq; then
+    local j; j=$(cat)
+    printf '%s' "$j" | jq -r '"import \(.id)  [\(.status)]  zdroj: \(.source.kind) \(.source.url // .source.name // "")",
+      (if .plan then "vybráno: \(.plan.selected)  blokováno: \(.plan.blocked|length)  neschváleno: \(.plan.unapproved|length)  cíl: \(.options.target.mode) \(.options.target.path // "")" else "zamčeno – rr import unlock \(.id)" end)'
+    printf '%s' "$j" | jq -r 'if .plan then (["#","OPERACE","AKCE","VYBR","SCHV","STAV","ZÁVISLOSTI"]|@tsv), ((.ops // []) | to_entries[] | .value as $o | [(.key+1), $o.id, $o.action, (if $o.selected then "ano" else "-" end), (if $o.approved then "ano" else "NE" end), (if $o.blocked then "BLOKOVÁNO" else ($o.status // "") end), (($o.missing // []) | map(.title) | join(", "))] | @tsv) else empty end' | column -t -s $'\t'
+  else cat; fi
+}
+
+cmd_export() {
+  local sub="${1:-list}"; shift || true
+  case "$sub" in
+    sections)
+      if rr_have_jq; then rr_api_transfer_sections | jq -r '.sections | to_entries[] | "\(.key+1). \(.value.id)\t\(.value.title)\t\(.value.items|length) pol.\(if .value.secret then "  [tajné]" else "" end)"' | column -t -s $'\t'
+      else rr_api_transfer_sections; fi ;;
+    create)
+      local secs="" note="" pass
+      while [ $# -gt 0 ]; do case "$1" in --note) note="$2"; shift 2 ;; *) secs="$1"; shift ;; esac; done
+      pass="$(ask_pass confirm)"
+      local body; body=$(rr_json_obj "passphrase==$pass" "note==$note")
+      [ -n "$secs" ] && body="${body%\}},\"sections\":$(rr_json_str "$secs")}"
+      rr_api_create_export "$body" | rr_json '{id, file, size, sections}' ;;
+    list|ls)
+      if rr_have_jq; then rr_api_list_exports | jq -r '(["ID","SOUBOR","VELIKOST","VYTVOŘEN","POZNÁMKA"]|@tsv),(.[]|[.id,.file,.size,.created,(.note//"")]|@tsv)' | column -t -s $'\t'
+      else rr_api_list_exports; fi ;;
+    download|get) need 1 "$@"; local out="${2:-rr-export-$1.rrx}"; RR_OUT="$out" rr_api_download_export "$1" && echo "uloženo: $out" ;;
+    rm|delete) need 1 "$@"; rr_api_delete_export "$1" | rr_json ;;
+    *) rr_die "neznámý příkaz export $sub" ;;
+  esac
+}
+
+cmd_import() {
+  local sub="${1:-list}"; shift || true
+  case "$sub" in
+    file|upload)
+      need 1 "$@"; [ -f "$1" ] || rr_die "soubor $1 neexistuje"
+      local r id; r=$(rr_api_upload_import "$1") || exit 1
+      id=$(printf '%s' "$r" | sed -n 's/.*"id": *"\([0-9a-f]*\)".*/\1/p' | head -1)
+      rr_api_unlock_import "$id" "$(rr_json_obj "passphrase==$(ask_pass)")" | print_plan ;;
+    url|remote)
+      need 1 "$@"; local url="$1" mode=file token=""; shift
+      while [ $# -gt 0 ]; do case "$1" in --server) mode=server; shift ;; --token) token="$2"; shift 2 ;; *) shift ;; esac; done
+      rr_api_remote_import "$(rr_json_obj "url==$url" "mode=$mode" "token==$token" "passphrase==$(ask_pass)")" | print_plan ;;
+    list|ls)
+      if rr_have_jq; then rr_api_list_imports | jq -r '(["ID","STAV","ZDROJ","OPERACÍ","VYTVOŘEN"]|@tsv),(.[]|[.id,.status,"\(.source.kind) \(.source.url // .source.name // "")",.ops,.created]|@tsv)' | column -t -s $'\t'
+      else rr_api_list_imports; fi ;;
+    show) need 1 "$@"; rr_api_get_import "$1" | print_plan ;;
+    unlock) need 1 "$@"; rr_api_unlock_import "$1" "$(rr_json_obj "passphrase==$(ask_pass)")" | print_plan ;;
+    select)
+      need 2 "$@"; local id="$1" sel="" kv; shift
+      for kv in "$@"; do local k="${kv%%=*}" v="${kv#*=}"; [ "$v" = on ] && v=true; [ "$v" = off ] && v=false; sel+="${sel:+,}$(rr_json_str "$k"):$v"; done
+      rr_api_update_import "$id" "{\"select\":{$sel}}" | print_plan ;;
+    set)
+      need 2 "$@"; local id="$1" conflict="" tmode="" tpath="" ren="" kv; shift
+      for kv in "$@"; do
+        case "$kv" in
+          conflict=*) conflict="${kv#*=}" ;;
+          target=*) tmode="${kv#*=}" ;;
+          path=*) tpath="${kv#*=}" ;;
+          rename.*=*) local rk="${kv#rename.}"; ren+="${ren:+,}$(rr_json_str "${rk%%=*}"):$(rr_json_str "${rk#*=}")" ;;
+        esac
+      done
+      local body="{"
+      [ -n "$conflict" ] && body+="\"conflict\":$(rr_json_str "$conflict"),"
+      [ -n "$tmode" ] && body+="\"target\":{\"mode\":$(rr_json_str "$tmode"),\"path\":$(rr_json_str "$tpath")},"
+      [ -n "$ren" ] && body+="\"renames\":{$ren},"
+      body="${body%,}}"
+      rr_api_update_import "$id" "$body" | print_plan ;;
+    deps) need 1 "$@"; rr_api_update_import "$1" '{"includeDependencies":true}' | print_plan ;;
+    approve)
+      need 1 "$@"; local id="$1"; shift
+      if [ "${1:-}" = "--all" ] || [ $# -eq 0 ]; then rr_api_update_import "$id" '{"approve":"selected"}' | print_plan
+      else local list="" o; for o in "$@"; do list+="${list:+,}$(rr_json_str "$o")"; done; rr_api_update_import "$id" "{\"approve\":[$list]}" | print_plan; fi ;;
+    run)
+      need 1 "$@"; [ "${2:-}" = "--confirm-paths" ] || rr_die "potvrďte cílové cesty: rr import run $1 --confirm-paths (cesty ukáže: rr import show $1)"
+      if rr_have_jq; then rr_api_run_import "$1" '{"confirmPaths":true}' | jq -r '"stav: \(.status)", (.results[] | "  \(.status)\t\(.id)\t\(.message)")'
+      else rr_api_run_import "$1" '{"confirmPaths":true}'; fi ;;
+    rm|delete) need 1 "$@"; rr_api_delete_import "$1" | rr_json ;;
+    *) rr_die "neznámý příkaz import $sub" ;;
+  esac
+}
+
 cmd_task() {
   local sub="${1:-list}"; shift || true
   case "$sub" in
@@ -461,6 +564,8 @@ main() {
       else rr_api_list_events "$(rr_query "limit=${1:-30}")"; fi ;;
     replication|replications|repl) cmd_replication "$@" ;;
     task|tasks) cmd_task "$@" ;;
+    export) cmd_export "$@" ;;
+    import) cmd_import "$@" ;;
     route|routes) cmd_route "$@" ;;
     cache) cmd_cache "$@" ;;
     user|users) cmd_user "$@" ;;

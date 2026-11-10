@@ -11,7 +11,7 @@ Maintainer: **m5ike**. Bez externích závislostí – jen Node.js ≥ 18 (serve
 │  Web Backend Server (Node.js)                                                │
 │   ├─ /               homepage (info, rychlé stažení klientů, návod)          │
 │   ├─ /admin/         Web GUI (konfigurace a správa)  ── používá rr-client.js │
-│   ├─ /api/v1/*       správcovské API (79 operací, api/spec.json)             │
+│   ├─ /api/v1/*       správcovské API (92 operací, api/spec.json)             │
 │   ├─ /, /r/<repo>/   npm registry protokol (publish, install, search, tagy…) │
 │   ├─ /v2/            Docker Registry API v2 (push, pull, tagy, katalog)     │
 │   ├─ /git/           git smart HTTP (clone, fetch, push; zrcadla GitHubu)    │
@@ -85,7 +85,10 @@ rr-web serve --open                                       # Web GUI lokálně
 * **Cache** – vzdálená metadata i tarbally na disku s TTL, odpovědi z cache do vypršení, při výpadku upstreamu stale kopie,
   deduplikace souběžných požadavků, správa přes API.
 * **Uživatelé a tokeny** – role admin/publisher/reader, tokeny (i read-only, s expirací), hlavní `api_token` z menuconfig.
-* **Správcovské API** – 79 operací, z [api/spec.json](api/spec.json) se při sestavení generují klientské knihovny
+* **Export a import** – šifrovaný (AES-256-GCM, scrypt) export celého registru nebo vybraných částí včetně klíčů a hesel,
+  import s plánem operací v pevném pořadí, kontrolou závislostí, volbou cílových cest (registr nebo workspace),
+  přejmenováním repozitářů a vzdáleným importem z jiného serveru se schvalováním operací. Viz [docs/TRANSFER.md](docs/TRANSFER.md).
+* **Správcovské API** – 92 operací, z [api/spec.json](api/spec.json) se při sestavení generují klientské knihovny
   (JS/TS, bash) a dokumentace [docs/API.md](docs/API.md). Server odmítne start, pokud by nějaká operace neměla handler.
 * **Klientské balíčky** (maintainer m5ike) se při startu publikují do registru a jsou ke stažení na homepage:
   `@m5ike/rr-client`, `@m5ike/rr_bash-cli`, `@m5ike/rr_bash-gui`, `@m5ike/rr_web-guicli`.

@@ -2,6 +2,7 @@
 // Management REST API (/api/v1). Routes are built from api/spec.json - every operation in the
 // spec must have a handler here, so the generated client libraries always match the server.
 const { HttpError, send, sendJson, readBody, readJson, baseUrl, mimeType } = require('../util/http');
+const fs = require('fs');
 const files = require('../repos/files');
 const { checkQuota, assertMutable, invalidate } = require('../policies');
 const { githubList } = require('../util/git');
@@ -24,6 +25,8 @@ function compile(spec) {
 function bool(v) {
   return v === true || v === 'true' || v === '1' || v === 1 || v === 'yes';
 }
+
+const IMPORT_LIMIT = Number(process.env.RR_IMPORT_MAX_MB || 20480) * 1024 * 1024;
 
 function createHandlers(app) {
   const dockerRepo = (name) => {
@@ -370,6 +373,33 @@ function createHandlers(app) {
       const s = app.updateSettings(body);
       app.audit(identity, 'update-settings', Object.keys(body).join(', '));
       return s;
+    },
+
+    // ---- export / import ----
+    transferSections: () => app.transfer.describe(),
+    listExports: () => app.transfer.listExports(),
+    createExport: ({ req, body, identity }) => app.transfer.createExport(body, identity, baseUrl(req, app.config)),
+    downloadExport: ({ res, params }) => new Promise((resolve, reject) => {
+      const m = app.transfer.exportMeta(params.id);
+      res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': fs.statSync(m.path).size, 'content-disposition': `attachment; filename="${m.file}"` });
+      fs.createReadStream(m.path).on('error', reject).pipe(res).on('finish', resolve);
+    }),
+    deleteExport: ({ params, identity }) => {
+      app.transfer.deleteExport(params.id);
+      app.audit(identity, 'delete-export', params.id);
+      return { ok: true };
+    },
+    listImports: () => app.transfer.listImports(),
+    uploadImport: ({ req, identity }) => app.transfer.receiveUpload(req, identity, IMPORT_LIMIT),
+    remoteImport: ({ body, identity }) => app.transfer.receiveRemote(body, identity, IMPORT_LIMIT),
+    getImport: ({ params }) => app.transfer.getImport(params.id),
+    unlockImport: ({ params, body, identity }) => app.transfer.unlock(params.id, body.passphrase, identity),
+    updateImport: ({ params, body, identity }) => app.transfer.updateImport(params.id, body, identity),
+    runImport: ({ params, body, identity }) => app.transfer.runImport(params.id, body, identity),
+    deleteImport: ({ params, identity }) => {
+      app.transfer.deleteImport(params.id);
+      app.audit(identity, 'delete-import', params.id);
+      return { ok: true };
     },
   };
 }

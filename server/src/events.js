@@ -11,7 +11,7 @@ const EVENT_TYPES = [
   'docker.push', 'docker.delete',
   'git.create', 'git.push', 'git.sync', 'git.delete',
   'repo.create', 'repo.update', 'repo.delete', 'repo.cleanup',
-  'replication.failed',
+  'replication.failed', 'transfer.import',
 ];
 const FORMATS = ['json', 'slack', 'discord'];
 

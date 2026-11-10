@@ -158,6 +158,24 @@ Každá operace je dostupná ve všech klientech:
 | `getSettings` | `GET /api/v1/settings` | admin | Nastavení serveru | `rr_api_get_settings` |
 | `updateSettings` | `PUT /api/v1/settings` | admin | Změnit nastavení {defaultRepo, dockerRepo, gitRepo, anonymousRead, allowRegistration, cacheTtl, tarballTtl, title, plugins}<br>body: json | `rr_api_update_settings` |
 
+## transfer
+
+| Operace | Metoda a cesta | Auth | Popis | Bash |
+|---|---|---|---|---|
+| `transferSections` | `GET /api/v1/transfer/sections` | admin | Části, které lze exportovat (sekce, položky, velikosti) v pořadí exportu/importu | `rr_api_transfer_sections` |
+| `listExports` | `GET /api/v1/exports` | admin | Vytvořené exporty | `rr_api_list_exports` |
+| `createExport` | `POST /api/v1/exports` | admin | Vytvořit šifrovaný export {passphrase, sections: [server, secret, plugins, users, tokens, repos, content, routes, webhooks, settings, stats, audit, cache], items: {sekce: [id]}, note}<br>body: json | `rr_api_create_export` |
+| `downloadExport` | `GET /api/v1/exports/:id/download` | admin | Stáhnout soubor exportu (.rrx) | `rr_api_download_export` |
+| `deleteExport` | `DELETE /api/v1/exports/:id` | admin | Smazat export | `rr_api_delete_export` |
+| `listImports` | `GET /api/v1/imports` | admin | Rozpracované a dokončené importy | `rr_api_list_imports` |
+| `uploadImport` | `POST /api/v1/imports` | admin | Nahrát soubor exportu (.rrx) k importu<br>body: binary | `rr_api_upload_import` |
+| `remoteImport` | `POST /api/v1/imports/remote` | admin | Vzdálený import z URL {url, mode: file|server, token, passphrase, sections} – operace je nutné schválit<br>body: json | `rr_api_remote_import` |
+| `getImport` | `GET /api/v1/imports/:id` | admin | Stav importu a plán operací (pořadí, akce, cíle, závislosti, schválení) | `rr_api_get_import` |
+| `unlockImport` | `POST /api/v1/imports/:id/unlock` | admin | Odemknout import heslem a sestavit plán {passphrase}<br>body: json | `rr_api_unlock_import` |
+| `updateImport` | `PUT /api/v1/imports/:id` | admin | Výběr a schválení operací {select, approve, revoke, includeDependencies, conflict, overrides, renames, target}<br>body: json | `rr_api_update_import` |
+| `runImport` | `POST /api/v1/imports/:id/run` | admin | Spustit import vybraných a schválených operací {confirmPaths: true}<br>body: json | `rr_api_run_import` |
+| `deleteImport` | `DELETE /api/v1/imports/:id` | admin | Zahodit import (smaže dočasná data) | `rr_api_delete_import` |
+
 ## Příklady
 
 ```bash

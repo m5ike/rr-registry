@@ -743,6 +743,117 @@
       "auth": "admin",
       "body": "json",
       "summary": "Změnit nastavení {defaultRepo, dockerRepo, gitRepo, anonymousRead, allowRegistration, cacheTtl, tarballTtl, title, plugins}"
+    },
+    {
+      "id": "transferSections",
+      "group": "transfer",
+      "method": "GET",
+      "path": "/transfer/sections",
+      "auth": "admin",
+      "summary": "Části, které lze exportovat (sekce, položky, velikosti) v pořadí exportu/importu"
+    },
+    {
+      "id": "listExports",
+      "group": "transfer",
+      "method": "GET",
+      "path": "/exports",
+      "auth": "admin",
+      "summary": "Vytvořené exporty"
+    },
+    {
+      "id": "createExport",
+      "group": "transfer",
+      "method": "POST",
+      "path": "/exports",
+      "auth": "admin",
+      "summary": "Vytvořit šifrovaný export {passphrase, sections: [server, secret, plugins, users, tokens, repos, content, routes, webhooks, settings, stats, audit, cache], items: {sekce: [id]}, note}",
+      "body": "json"
+    },
+    {
+      "id": "downloadExport",
+      "group": "transfer",
+      "method": "GET",
+      "path": "/exports/:id/download",
+      "auth": "admin",
+      "summary": "Stáhnout soubor exportu (.rrx)",
+      "response": "binary"
+    },
+    {
+      "id": "deleteExport",
+      "group": "transfer",
+      "method": "DELETE",
+      "path": "/exports/:id",
+      "auth": "admin",
+      "summary": "Smazat export"
+    },
+    {
+      "id": "listImports",
+      "group": "transfer",
+      "method": "GET",
+      "path": "/imports",
+      "auth": "admin",
+      "summary": "Rozpracované a dokončené importy"
+    },
+    {
+      "id": "uploadImport",
+      "group": "transfer",
+      "method": "POST",
+      "path": "/imports",
+      "auth": "admin",
+      "summary": "Nahrát soubor exportu (.rrx) k importu",
+      "body": "binary"
+    },
+    {
+      "id": "remoteImport",
+      "group": "transfer",
+      "method": "POST",
+      "path": "/imports/remote",
+      "auth": "admin",
+      "summary": "Vzdálený import z URL {url, mode: file|server, token, passphrase, sections} – operace je nutné schválit",
+      "body": "json"
+    },
+    {
+      "id": "getImport",
+      "group": "transfer",
+      "method": "GET",
+      "path": "/imports/:id",
+      "auth": "admin",
+      "summary": "Stav importu a plán operací (pořadí, akce, cíle, závislosti, schválení)"
+    },
+    {
+      "id": "unlockImport",
+      "group": "transfer",
+      "method": "POST",
+      "path": "/imports/:id/unlock",
+      "auth": "admin",
+      "summary": "Odemknout import heslem a sestavit plán {passphrase}",
+      "body": "json"
+    },
+    {
+      "id": "updateImport",
+      "group": "transfer",
+      "method": "PUT",
+      "path": "/imports/:id",
+      "auth": "admin",
+      "summary": "Výběr a schválení operací {select, approve, revoke, includeDependencies, conflict, overrides, renames, target}",
+      "body": "json"
+    },
+    {
+      "id": "runImport",
+      "group": "transfer",
+      "method": "POST",
+      "path": "/imports/:id/run",
+      "auth": "admin",
+      "summary": "Spustit import vybraných a schválených operací {confirmPaths: true}",
+      "body": "json"
+    },
+    {
+      "id": "deleteImport",
+      "group": "transfer",
+      "method": "DELETE",
+      "path": "/imports/:id",
+      "auth": "admin",
+      "summary": "Zahodit import (smaže dočasná data)"
     }
   ]
 }

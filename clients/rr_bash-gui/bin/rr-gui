@@ -368,6 +368,90 @@ screen_jobs() {
   done
 }
 
+# ----------------------------------------------------------------- export / import
+plan_text() {
+  printf '%s' "$1" | jq -r '"Import \(.id) [\(.status)] – \(.source.kind) \(.source.url // .source.name // "")",
+    (if .plan then "Vybráno \(.plan.selected) · blokováno \(.plan.blocked|length) · neschváleno \(.plan.unapproved|length) · cíl \(.options.target.mode) \(.options.target.path // "")\n" else "Zamčeno heslem." end),
+    ((.ops // [])[] | "\(if .selected then "[x]" else "[ ]" end) \(if .approved then "✓" else "!" end) \(.id)  → \(.action)\(if .blocked then "  BLOKOVÁNO: " + ((.missing // []) | map(.title) | join(", ")) else "" end)\(if .status then "  (" + .status + ")" else "" end)"),
+    (if .plan then "\nCílové cesty:", (.plan.targets[] | "  " + .) else empty end)'
+}
+
+screen_import_plan() {
+  local id="$1" st c
+  while true; do
+    st=$(api rr_api_get_import "$id") || return
+    if [ "$(printf '%s' "$st" | jq -r .status)" = locked ]; then
+      local p; p=$(secret "Heslo exportu:") || return
+      st=$(api rr_api_unlock_import "$id" "$(rr_json_obj "passphrase==$p")") || continue
+    fi
+    c=$(UI_TITLE="Import $id" menu "$(printf '%s' "$st" | jq -r '"\(.source.kind) \(.source.url // .source.name // "") · \(.status)\nvybráno \(.plan.selected // 0) · blokováno \(.plan.blocked|length) · neschváleno \(.plan.unapproved|length)"')" \
+      plan "Plán operací a cílové cesty" select "Vybrat operace" deps "Doplnit chybějící závislosti" conflict "Při konfliktu: přeskočit / přepsat" \
+      target "Cíl: registr nebo workspace" approve "Schválit vybrané operace" run "Spustit import" discard "Zahodit import" back "Zpět") || return
+    case "$c" in
+      plan) text "$(plan_text "$st")" ;;
+      select)
+        read_items < <(printf '%s' "$st" | jq -r '.ops[] | .id, "\(.title) → \(.action)", (if .selected then "ON" else "OFF" end)')
+        local chosen; chosen=$(ui --checklist "Operace k importu (pořadí je pevné)" "$H" "$W" "$MH" "${ITEMS[@]}") || continue
+        local body; body=$(printf '%s' "$st" | jq -c --arg ch "$chosen" '($ch | gsub("\""; "") | split(" ")) as $on | {select: (.ops | map({key: .id, value: (.id as $i | $on | index($i) != null)}) | from_entries)}')
+        api rr_api_update_import "$id" "$body" >/dev/null ;;
+      deps) api rr_api_update_import "$id" '{"includeDependencies":true}' >/dev/null && msg "Závislosti doplněny." ;;
+      conflict) local m; m=$(radio "Když položka už existuje" skip "ponechat stávající" ON overwrite "přepsat / sloučit" OFF) && api rr_api_update_import "$id" "$(rr_json_obj "conflict=$m")" >/dev/null ;;
+      target)
+        local t pth; t=$(radio "Cíl importu" live "do běžícího registru" ON workspace "jen rozbalit do workspace" OFF) || continue
+        pth=""; [ "$t" = workspace ] && { pth=$(input "Cesta workspace (v data/workspaces/):" "$id") || continue; }
+        api rr_api_update_import "$id" "{\"target\":$(rr_json_obj "mode=$t" "path==$pth")}" >/dev/null ;;
+      approve) yesno "Schválit všechny vybrané operace?" && api rr_api_update_import "$id" '{"approve":"selected"}' >/dev/null ;;
+      run)
+        text "$(plan_text "$st")"
+        yesno "Potvrzujete cílové cesty a spuštění importu?" || continue
+        text "$(api rr_api_run_import "$id" '{"confirmPaths":true}' | jq -r '"Stav: \(.status)\n", (.results[] | "\(.status)\t\(.id)\t\(.message)")')" ;;
+      discard) yesno "Zahodit import?" && api rr_api_delete_import "$id" >/dev/null && return ;;
+      *) return ;;
+    esac
+  done
+}
+
+screen_transfer() {
+  while true; do
+    local c
+    c=$(UI_TITLE="Export a import" menu "Šifrovaný přenos celého registru (pevné pořadí sekcí)" \
+      export "Vytvořit šifrovaný export" exports "Exporty – stáhnout / smazat" file "Import ze souboru .rrx" url "Vzdálený import z URL" imports "Rozpracované importy" back "Zpět") || return
+    case "$c" in
+      export)
+        read_items < <(api rr_api_transfer_sections | jq -r '.sections[] | .id, "\(.title) (\(.items|length))\(if .secret then " [tajné]" else "" end)", (if (.items|length) > 0 and (.optional|not) then "ON" else "OFF" end)')
+        local secs p p2 note; secs=$(ui --checklist "Sekce exportu" "$H" "$W" "$MH" "${ITEMS[@]}") || continue
+        secs=$(printf '%s' "$secs" | tr -d '"' | tr ' ' ',')
+        p=$(secret "Heslo exportu (min. 8 znaků):") || continue; p2=$(secret "Heslo znovu:") || continue
+        [ "$p" = "$p2" ] || { msg "Hesla se neshodují."; continue; }
+        note=$(input "Poznámka:") || continue
+        msg "$(api rr_api_create_export "$(rr_json_obj "passphrase==$p" "note==$note" "sections==$secs")" | jq -r '"Export vytvořen: \(.file)\n\(.size) B, id \(.id)"')" ;;
+      exports)
+        read_items < <(api rr_api_list_exports | jq -r '.[] | .id, "\(.file)  \(.size) B  \(.note // "")"')
+        [ ${#ITEMS[@]} -gt 0 ] || { msg "Žádné exporty."; continue; }
+        local id a o; id=$(menu "Exporty" "${ITEMS[@]}") || continue
+        a=$(menu "Export $id" download "Stáhnout" delete "Smazat") || continue
+        if [ "$a" = download ]; then o=$(input "Uložit do:" "$PWD/rr-export-$id.rrx") && RR_OUT="$o" rr_api_download_export "$id" 2>"$TMP/err" && msg "Uloženo: $o" || true
+        else yesno "Smazat export?" && api rr_api_delete_export "$id" >/dev/null; fi ;;
+      file)
+        local f r; f=$(input "Soubor exportu:" "$PWD/") || continue
+        r=$(api rr_api_upload_import "$f") || continue
+        screen_import_plan "$(printf '%s' "$r" | jq -r .id)" ;;
+      url)
+        local u m tk p r; u=$(input "URL (jiný RR Registry nebo soubor .rrx):" "https://") || continue
+        m=$(radio "Zdroj" server "jiný RR Registry (vytvoří export)" ON file "URL souboru .rrx" OFF) || continue
+        tk=$(secret "API token zdroje:") || continue; p=$(secret "Heslo exportu:") || continue
+        r=$(api rr_api_remote_import "$(rr_json_obj "url==$u" "mode=$m" "token==$tk" "passphrase==$p")") || continue
+        msg "Vzdálený import připraven. Každou operaci je nutné schválit."
+        screen_import_plan "$(printf '%s' "$r" | jq -r .id)" ;;
+      imports)
+        read_items < <(api rr_api_list_imports | jq -r '.[] | .id, "\(.status)  \(.source.kind) \(.source.url // .source.name // "")  \(.ops) op."')
+        [ ${#ITEMS[@]} -gt 0 ] || { msg "Žádné importy."; continue; }
+        local id; id=$(menu "Importy" "${ITEMS[@]}") && screen_import_plan "$id" ;;
+      *) return ;;
+    esac
+  done
+}
+
 # ----------------------------------------------------------------- packages
 screen_packages() {
   local repo="$1" filter=""
@@ -671,6 +755,7 @@ main_menu() {
       D "Docker image" \
       W "Webhooky a události" \
       J "Replikace a naplánované úlohy" \
+      X "Export a import (šifrovaný přenos)" \
       S "Nastavení serveru" \
       L "Logy" \
       K "Klientské balíčky" \
@@ -691,6 +776,7 @@ main_menu() {
       D) screen_images ;;
       W) screen_webhooks ;;
       J) screen_jobs ;;
+      X) screen_transfer ;;
       S) screen_settings ;;
       L) screen_logs ;;
       K) screen_clients ;;

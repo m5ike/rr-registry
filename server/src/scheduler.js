@@ -34,8 +34,8 @@ class Scheduler {
       },
       {
         id: 'cache-expired', name: 'Čištění expirované cache', intervalSec: 6 * 3600,
-        description: 'Smaže z cache položky s prošlou platností.',
-        fn: async () => ({ removed: app.cache.purge({ expired: true }) }),
+        description: 'Smaže z cache položky s prošlou platností a dočasná data importů starší než 24 h.',
+        fn: async () => ({ removed: app.cache.purge({ expired: true }), importsRemoved: app.transfer.sweep() }),
       },
       {
         id: 'stats-flush', name: 'Uložení statistik', intervalSec: 60,

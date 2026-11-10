@@ -170,6 +170,20 @@ contains "rr task run" '"runs": 1' "$RR" task run cache-expired
 contains "rr route add push" '"push"' "$RR" route add name=repl when=push repo=internal target=http://127.0.0.1:9 token=x
 contains "rr replication list" "STATUS" "$RR" replication list
 
+echo "== export a import =="
+export RR_PASSPHRASE="e2e export heslo"
+contains "rr export sections" "content" "$RR" export sections
+contains "rr export create" '"file"' "$RR" export create users,repos,content --note e2e
+EXP_ID=$("$RR" export list | sed -n 2p | cut -d" " -f1)
+check "rr export download" "$RR" export download "$EXP_ID" "$TMP/e2e.rrx"
+contains "soubor exportu je šifrovaný" "RRX1" head -c 4 "$TMP/e2e.rrx"
+contains "rr import file" "vybráno" "$RR" import file "$TMP/e2e.rrx"
+IMP_ID=$("$RR" import list | sed -n 2p | cut -d" " -f1)
+contains "rr import set workspace" "workspace" "$RR" import set "$IMP_ID" target=workspace path=e2e
+contains "rr import run" "stav: done" "$RR" import run "$IMP_ID" --confirm-paths
+contains "workspace obsahuje balíčky" "packument.json" bash -c "find '$TMP/data/workspaces/e2e' -name packument.json | head -1"
+unset RR_PASSPHRASE
+
 echo "== rr-api.sh knihovna =="
 contains "rr_api_* funkce" '"version"' bash -c ". '$ROOT/dist/clients/rr_bash-cli/lib/rr-api.sh'; rr_api_status"
 contains "rr_urlencode" "%40scope%2Fname" bash -c ". '$ROOT/dist/clients/rr_bash-cli/lib/rr-api.sh'; rr_urlencode @scope/name"
