@@ -49,32 +49,21 @@ Every repository type that has at least one repository is also served at the roo
 
 ## Migrating from the app id `npm-registry`
 
+Until 1.5.5 the app id was `npm-registry`. An installed portal (1.8.0 or newer) moves over like this (docker mode;
+in static mode move `data/apps/npm-registry` to `data/apps/registry` instead of copying the volume):
+
 ```bash
-aitools app remove npm-registry          # keeps the data unless --purge
-aitools app add <source of the registry> # attaches it as "registry"
-# move the data: data/apps/npm-registry -> data/apps/registry (static) or the docker volume
-aitools user access <user> registry <role>
+aitools update --from <ai-tools checkout>              # portal 1.8.0 (dynamic hosts)
+docker stop aitools-npm-registry-web
+docker volume create aitools_registry-data
+docker run --rm -v aitools_npm-registry-data:/from:ro -v aitools_registry-data:/to alpine cp -a /from/. /to/
+aitools app remove npm-registry                         # keeps data and the old volume
+mv apps/npm-registry backups/                           # old git checkout (app add would reuse it)
+aitools app add <registry repo> --git --ref portal/c1/v1.6.0
+aitools user access <user> registry <role>              # per-user access is stored per app id
+aitools docker up                                       # builds aitools/registry, removes the old container
 ```
 
-## Versioning
-
-Portal-compatible releases are tagged `portal/c<contract>/v<version>` (e.g.
-`portal/c1/v1.3.0`) next to the plain `v<version>` tag. `aitools compat` shows
-the tag that is deployed.
-
-## Single sign-on (1.5.0)
-
-Accounts and permissions are managed centrally in the portal (*App access*, or
-`aitools user access <user> registry <role>`). Roles: **admin**, **publisher**, **reader**
-(default for portal users: reader; portal administrators: admin).
-
-| Client | How it signs in |
-|---|---|
-| Browser (home page, `/admin/`) behind the portal gateway | automatically: the gateway sends the signed identity `X-Portal-Identity` (user + role); the admin UI skips its login form, its logout logs out of the portal |
-| `docker login`, git over HTTPS, Basic auth | portal user name + **portal password** — checked against the portal (`POST /_portal/api/auth/verify`, cached 60 s) |
-| `npm login --auth-type=legacy`, web login form | portal credentials accepted; npm tokens of portal accounts expire after 30 days |
-| Tokens, local users, `RR_API_TOKEN` | unchanged (local accounts win over portal accounts of the same name) |
-
-Only active when the portal starts the registry (`PORTAL_IDENTITY_KEY`, `PORTAL_APP_ID`,
-`PORTAL_INTERNAL_URL` in the environment); standalone the identity header is ignored.
-
+Then point DNS (or `/etc/hosts`) at the new hosts: `registry.<domain>` and `{npm,docker,git,generic}-registry.<domain>`.
+The old host `npm-registry.<domain>` keeps working — it is now the npm type host (npm, API, admin UI, `/v2/`, `/git/`).
+Once everything works, the old volume can be removed: `docker volume rm aitools_npm-registry-data`.
