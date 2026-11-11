@@ -102,7 +102,7 @@ rr webhook deliveries
 | npm | `npm.publish`, `npm.unpublish`, `npm.tag`, `npm.deprecate` |
 | soubory | `file.upload`, `file.delete` |
 | docker | `docker.push`, `docker.delete` |
-| git | `git.create`, `git.push`, `git.sync`, `git.delete` |
+| git | `git.create`, `git.push`, `git.sync`, `git.delete`, `git.pull.opened`, `git.pull.closed`, `git.pull.reopened`, `git.pull.merged`, `git.issue.opened`, `git.issue.closed`, `git.issue.reopened`, `git.comment` |
 | repozitáře | `repo.create`, `repo.update`, `repo.delete`, `repo.cleanup` |
 | replikace | `replication.failed` |
 

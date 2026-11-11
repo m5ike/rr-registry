@@ -16,7 +16,7 @@ Sekce se exportují i importují vždy v tomto pořadí, každá smí záviset j
 | 4 | `users` | uživatelé, role, hashe hesel | ano |
 | 5 | `tokens` | API/npm tokeny (hashe) – závisí na uživatelích | ano |
 | 6 | `repos` | konfigurace repozitářů (typ, ACL, kvóty, retence); skupiny až po svých členech | |
-| 7 | `content` | obsah repozitářů – npm balíčky, Docker vrstvy, git repozitáře (vč. hooků), soubory | |
+| 7 | `content` | obsah repozitářů – npm balíčky, Docker vrstvy, git repozitáře (vč. hooků, pull requestů a issues), soubory | |
 | 8 | `routes` | směrovací pravidla vč. tokenů pro cílové servery | ano |
 | 9 | `webhooks` | webhooky vč. tajných klíčů | ano |
 | 10 | `settings` | nastavení serveru – odkazuje na repozitáře a pluginy | |

@@ -69,7 +69,8 @@ rr-web serve --open                                       # Web GUI lokálně
 * **Git repozitáře** – repozitář typu `git` (`git clone/fetch/push` přes HTTP, `/git/<název>.git`), vytvoření prvním pushem,
   chráněné větve (zákaz force-push a mazání), procházení souborů, commitů, větví a tagů, archivy tar.gz/zip,
   **pull zrcadla** (GitHub, GitLab, …: plánovaná synchronizace, obnova při přístupu, webhook z GitHubu),
-  **push zrcadla** (po každém push odeslat na GitHub, volitelně repozitář na GitHubu vytvořit) a **hromadný import z GitHubu**.
+  **push zrcadla** (po každém push odeslat na GitHub, volitelně repozitář na GitHubu vytvořit), **hromadný import z GitHubu**
+  a **pull requesty a issues** s API kompatibilním s GitHubem (slučování merge / squash / rebase přímo na serveru, komentáře, štítky).
   Viz [docs/GIT.md](docs/GIT.md).
 * **Více repozitářů** – typ `npm`, `docker`, `git`, `generic` (libovolné soubory: PUT/GET/DELETE) nebo `group`
   (virtuální skupina npm/generic repozitářů), výchozí repozitář na `/`, ostatní na `/r/<repo>/`, veřejné/soukromé, zákaz publikace.
