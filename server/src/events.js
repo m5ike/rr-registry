@@ -34,6 +34,7 @@ class Events {
     const ev = { id: crypto.randomUUID(), type, time: new Date().toISOString(), user: identity ? identity.name : 'system', repo: data.repo || null, data };
     this.recent.push(ev);
     if (this.recent.length > 200) this.recent.shift();
+    if (type.startsWith('repo.') || type === 'transfer.import') this.app.typeHosts?.schedule();
     setImmediate(() => {
       for (const hook of this.store.get()) if (this.matches(hook, ev)) this.deliver(hook, ev).catch(() => {});
       this.app.plugins.notify('onEvent', ev).catch((e) => this.app.log.warn(`event ${type}: ${e.message}`));

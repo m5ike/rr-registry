@@ -63,6 +63,9 @@ async function readJson(req, limit) {
 }
 
 function baseUrl(req, config) {
+  const proto0 = () => (req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http')).split(',')[0].trim();
+  // a per-type host (npm-registry.<domain>, ...) links to itself, not to the public URL of the main host
+  if (req._typeHost) return `${proto0()}://${req._typeHost}`;
   if (config.publicUrl) return config.publicUrl.replace(/\/+$/, '');
   const proto = (req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http')).split(',')[0].trim();
   const host = (req.headers['x-forwarded-host'] || req.headers.host || `localhost:${config.port}`).split(',')[0].trim();

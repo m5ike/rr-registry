@@ -133,6 +133,8 @@ Licence MIT · © m5ike
 
 RR Registry can be attached to the AI Tools Portal (gateway, TLS, health checks,
 single entry point) without losing standalone operation — see
-[docs/PORTAL.md](docs/PORTAL.md). Manifest: [`portal.app.json`](portal.app.json).
+[docs/PORTAL.md](docs/PORTAL.md). Manifest: [`portal.app.json`](portal.app.json). In the portal the app is called
+`registry`, and every repository type also gets its own host: `npm-registry.<domain>`, `docker-registry.<domain>`,
+`git-registry.<domain>` and `generic-registry.<domain>` (e.g. `git clone https://git-registry.<domain>/<name>.git`).
 
 # rr-registry

@@ -21,6 +21,7 @@ const { gitAvailable } = require('./util/git');
 const { JsonStore, mkdirp, readJsonFile, rmrf, dirSize } = require('./util/store');
 const { Auth } = require('./auth');
 const { Portal } = require('./portal');
+const { TypeHosts } = require('./typehosts');
 const { Transfer } = require('./transfer');
 const { Cache } = require('./cache');
 const { PluginManager } = require('./plugins');
@@ -99,6 +100,7 @@ class App {
     this.cache = new Cache(path.join(c.dataDir, 'cache'));
     this.auth = new Auth(this);
     this.portal = new Portal(process.env, this.log);
+    this.typeHosts = new TypeHosts(this);
     this.transfer = new Transfer(this);
     this.handlers = new Map();
     this.events = new Events(this);
@@ -383,6 +385,7 @@ class App {
       repos: this.listRepos().length,
       packages: npmRepos.reduce((n, r) => n + this.repoHandler(r.name).names().length, 0),
       routes: this.stores.routes.get().length,
+      typeHosts: this.typeHosts.list(base),
       gitRepos: this.listRepos().filter((r) => r.type === 'git').reduce((n, r) => n + this.repoHandler(r.name).names().length, 0),
       webhooks: this.stores.webhooks.get().length,
       git: gitAvailable() || null,
@@ -429,6 +432,15 @@ class App {
       await this.auth.portalPreauth(req);
       // AI Tools Portal discovery (contract 1): the manifest of this app, optional for standalone use.
       if (p === '/.well-known/portal-app.json' && (req.method === 'GET' || req.method === 'HEAD')) return this.portalManifest(res);
+      // {type}-{app}.<domain>: one repository type at the host root (see typehosts.js)
+      const th = this.typeHosts.match(req);
+      if (th) {
+        const np = this.typeHosts.rewrite(th.type, p);
+        if (np === null) throw new HttpError(404, `no ${th.type} repository on this registry`);
+        req._typeHost = th.host;
+        res.setHeader('x-rr-type-host', th.type);
+        if (np !== p) { p = np; url.pathname = np; }
+      }
       if (p === '/api/v1' || p.startsWith('/api/v1/')) return await this.api(req, res, url);
       if (p === '/v2' || p.startsWith('/v2/')) {
         try {
@@ -515,6 +527,7 @@ class App {
     return new Promise((resolve) => {
       this.server.listen(port, host, () => {
         this.port = this.server.address().port;
+        this.typeHosts.schedule(500);
         this.log.info(`RR Registry ${this.config.version} listening on http://${host}:${this.port} (data: ${this.config.dataDir})`);
         resolve(this);
       });
@@ -523,6 +536,7 @@ class App {
 
   close() {
     this.scheduler.stop();
+    this.typeHosts.stop();
     try { this.statsStore.flush(); } catch { /* ignore */ }
     return new Promise((resolve) => {
       if (!this.server) return resolve();

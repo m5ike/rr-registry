@@ -25,7 +25,7 @@ function startFakePortal() {
     req.on('end', () => {
       portalCalls++;
       const send = (st, obj) => { res.writeHead(st, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
-      if (req.url !== '/_portal/api/auth/verify' || req.headers.authorization !== `PortalApp npm-registry ${KEY}`) return send(401, { error: 'app' });
+      if (req.url !== '/_portal/api/auth/verify' || req.headers.authorization !== `PortalApp registry ${KEY}`) return send(401, { error: 'app' });
       const { username, password } = JSON.parse(body);
       if (username === 'eva' && password === 'eva-pass-123') return send(200, { user: 'eva', role: 'publisher' });
       if (username === 'bob' && password === 'bob-pass-123') return send(403, { error: 'no access' });
@@ -57,7 +57,7 @@ test.before(async () => {
   await startFakePortal();
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rr-portal-test-'));
   app = new App({ dataDir, port: 0, host: '127.0.0.1', apiToken: 'portal-test-token-123456', adminPassword: 'adminpass', quiet: true, logRequests: false, publicUrl: '' });
-  app.portal = new Portal({ PORTAL_IDENTITY_KEY: KEY, PORTAL_APP_ID: 'npm-registry', PORTAL_INTERNAL_URL: `http://127.0.0.1:${portal.address().port}` });
+  app.portal = new Portal({ PORTAL_IDENTITY_KEY: KEY, PORTAL_APP_ID: 'registry', PORTAL_INTERNAL_URL: `http://127.0.0.1:${portal.address().port}` });
   await app.listen(0, '127.0.0.1');
   base = `http://127.0.0.1:${app.port}`;
 });

@@ -1,6 +1,6 @@
 {
   "name": "@m5ike/rr-server",
-  "version": "1.5.5",
+  "version": "1.6.0",
   "description": "RR Registry - web backend server (npm compatible registry, generic repositories, routing proxy with cache, management API)",
   "private": true,
   "license": "MIT",

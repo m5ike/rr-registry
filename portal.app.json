@@ -1,10 +1,10 @@
 {
   "$schema": "https://aitools.dev/spec/portal-app/1/schema.json",
   "contract": 1,
-  "id": "npm-registry",
-  "name": "RR Registry",
-  "version": "1.5.5",
-  "description": "Private npm, Docker/OCI and git registry with caching proxy, generic repositories and admin UI.",
+  "id": "registry",
+  "name": "Registry",
+  "version": "1.6.0",
+  "description": "Private npm, Docker/OCI and git registry with caching proxy, generic repositories and admin UI. Every repository type is also served on its own host ({type}-registry.<domain>).",
   "category": "devtools",
   "icon": "web/assets/logo.svg",
   "compat": {
@@ -20,7 +20,8 @@
       "/api/v1/",
       "/admin/",
       "/git/"
-    ]
+    ],
+    "dynamicHosts": "{name}-{app}.{domain}"
   },
   "services": [
     {

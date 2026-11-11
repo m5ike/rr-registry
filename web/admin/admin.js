@@ -309,6 +309,13 @@
           git: `git remote add rr ${reg}git/tym/projekt.git\ngit push rr main          # repozitář se vytvoří\ngit clone ${reg}git/tym/projekt.git`,
           klienti: `curl -fsSL ${reg}install.sh | bash      # rr, rr-gui, rr-web\nrr login admin && rr status`,
         };
+        // per-type hosts ({type}-registry.<domain>): every repository type at its own host root
+        const th = c.st.typeHosts || [];
+        if (th.length) {
+          const ex = { npm: (u) => `npm config set registry ${u}`, docker: (u) => `docker login ${u.replace(/^https?:\/\//, '').replace(/\/$/, '')}`, git: (u) => `git clone ${u}tym/projekt.git`, generic: (u) => `curl -O ${u}cesta/soubor.tgz` };
+          const w = Math.max(...th.map((t) => t.type.length));
+          snippets.hosty = th.map((t) => `# ${t.type.padEnd(w)}  ${t.url}   (repozitář ${t.repo}${t.routed ? '' : ', v portálu zatím nesměrováno'})\n${ex[t.type] ? ex[t.type](t.url) : ''}`).join('\n\n');
+        }
         let cur = 'npm';
         const draw = () => {
           el.innerHTML = `<div class="tabs">${Object.keys(snippets).map((k) => `<button type="button" data-s="${k}" class="${k === cur ? 'active' : ''}">${k}</button>`).join('')}<span class="spacer"></span><button type="button" class="btn small ghost" data-copy>${icon('copy', 15)}Kopírovat</button></div><pre>${esc(snippets[cur])}</pre>`;
