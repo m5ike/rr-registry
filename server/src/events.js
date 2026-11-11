@@ -10,6 +10,8 @@ const EVENT_TYPES = [
   'file.upload', 'file.delete',
   'docker.push', 'docker.delete',
   'git.create', 'git.push', 'git.sync', 'git.delete',
+  'git.pull.opened', 'git.pull.closed', 'git.pull.reopened', 'git.pull.merged',
+  'git.issue.opened', 'git.issue.closed', 'git.issue.reopened', 'git.comment',
   'repo.create', 'repo.update', 'repo.delete', 'repo.cleanup',
   'replication.failed', 'transfer.import',
 ];
@@ -17,7 +19,7 @@ const FORMATS = ['json', 'slack', 'discord'];
 
 function summary(ev) {
   const d = ev.data || {};
-  const what = d.name ? `${d.name}${d.versions ? `@${d.versions.join(',')}` : d.ref ? `:${d.ref}` : ''}` : d.path || '';
+  const what = d.name ? `${d.name}${d.versions ? `@${d.versions.join(',')}` : d.ref ? `:${d.ref}` : d.number ? `#${d.number}` : ''}` : d.path || '';
   return `[${ev.type}] ${d.repo || ''}${what ? ` ${what}` : ''} (${ev.user})`;
 }
 

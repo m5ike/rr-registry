@@ -366,7 +366,32 @@ Každá operace je dostupná ve všech klientech:
     }
     md += '\n';
   }
-  md += `## Příklady
+  md += `## Pull requesty a issues (kompatibilní s GitHubem)
+
+Operace \`*GitPull*\`, \`*GitIssue*\` a \`listGitBranches\` používají názvy polí GitHub REST API, takže je klient napsaný
+pro GitHub (např. ovladač AgentConf) může volat beze změn – jen s jinou základní URL
+\`${spec.basePath}/repos/<repo>/git/<název>\` (název s lomítky URL-kódovaný: \`tym%2Fprojekt\`).
+Pull requesty a issues sdílejí jednu číselnou řadu v rámci git repozitáře (od 1). Podporu ohlašuje
+\`GET ${spec.basePath}/status\` a \`GET ${spec.basePath}/auth/whoami\` polem \`features\` (\`git.pulls\`, \`git.issues\`).
+
+* **Pull** \`{ number, title, body, state, draft, head: {ref, sha}, base: {ref, sha}, html_url, merged, merged_at, merge_commit_sha, mergeable, mergeable_state, user: {login}, created_at, updated_at, comments }\`
+* **Issue** \`{ number, title, body, state, labels: [{name}], html_url, user: {login}, created_at, updated_at, closed_at, comments }\`
+* **Comment** \`{ id, body, user: {login}, created_at }\`
+
+Chyby mají tělo \`{ error, message }\`: 422 neplatný vstup (větev neexistuje, head = base), 405 nelze sloučit
+(zavřený / sloučený PR, konflikt), 409 základní větev se během slučování změnila (stačí zopakovat).
+
+\`\`\`bash
+R=http://localhost:4873/api/v1/repos/git/git/tym%2Fprojekt
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \\
+     -d '{"title":"Nová funkce","head":"feature","base":"main"}' $R/pulls
+curl -s -H "Authorization: Bearer $TOKEN" "$R/pulls?state=open&head=tym:feature"
+curl -s -H "Authorization: Bearer $TOKEN" $R/pulls/1          # mergeable, mergeable_state
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \\
+     -d '{"merge_method":"squash"}' $R/pulls/1/merge
+\`\`\`
+
+## Příklady
 
 \`\`\`bash
 # token z make menuconfig (RR_API_TOKEN) nebo z přihlášení

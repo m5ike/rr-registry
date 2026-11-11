@@ -88,7 +88,7 @@ test('spec: operation ids unique and paths valid', () => {
   for (const op of spec.operations) {
     assert.ok(!ids.has(op.id), `duplicate ${op.id}`);
     ids.add(op.id);
-    assert.match(op.method, /^(GET|POST|PUT|DELETE)$/);
+    assert.match(op.method, /^(GET|POST|PUT|PATCH|DELETE)$/);
     assert.match(op.auth, /^(none|user|read|publish|admin)$/);
     assert.ok(op.path.startsWith('/'));
   }

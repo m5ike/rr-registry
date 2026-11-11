@@ -1,5 +1,8 @@
 'use strict';
 // Helpers for running git and talking to the GitHub REST API.
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 const { HttpError } = require('./http');
 
@@ -116,4 +119,66 @@ async function githubEnsureRepo({ owner, repo, token, private: priv = true, desc
   return { created: true };
 }
 
-module.exports = { gitAvailable, run, git, redact, splitUrl, parseGithub, github, githubList, githubEnsureRepo, authHeader };
+/** [major, minor, patch] of the installed git, or null. */
+function gitVersion() {
+  const m = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(gitAvailable() || ''));
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3] || 0)] : null;
+}
+
+/**
+ * Can `git merge-tree --write-tree --merge-base=<c>` be used (git >= 2.40)?
+ * RR_GIT_MERGE_FALLBACK=1 forces the fallback through a temporary index (tests, old git).
+ */
+function hasMergeTree() {
+  if (process.env.RR_GIT_MERGE_FALLBACK === '1') return false;
+  const v = gitVersion();
+  return !!v && (v[0] > 2 || (v[0] === 2 && v[1] >= 40));
+}
+
+/**
+ * Test-merge `theirs` into `ours` in a (bare) repository without touching any ref or working tree.
+ * Resolves { clean: true, tree } | { clean: false, tree: null, conflicts: [paths] } | { clean: null } (cannot tell,
+ * e.g. unrelated histories). `mergeBase` overrides the merge base (used to replay single commits).
+ */
+async function mergeTree(cwd, ours, theirs, { mergeBase } = {}) {
+  if (hasMergeTree()) {
+    const args = ['merge-tree', '--write-tree', '--name-only', '--no-messages'];
+    if (mergeBase) args.push(`--merge-base=${mergeBase}`);
+    const r = await run([...args, ours, theirs], { cwd });
+    const lines = r.stdout.toString().split('\n').filter(Boolean);
+    if (r.code === 0) return { clean: true, tree: lines[0] };
+    if (r.code === 1) return { clean: false, tree: null, conflicts: [...new Set(lines.slice(1))] };
+    return { clean: null, tree: null, error: r.stderr.trim() };
+  }
+  return mergeTreeIndex(cwd, ours, theirs, mergeBase);
+}
+
+/** Fallback for git < 2.40: three-way read-tree into a temporary index + merge-one-file in a temporary directory. */
+async function mergeTreeIndex(cwd, ours, theirs, mergeBase) {
+  if (!mergeBase) {
+    const mb = await run(['merge-base', ours, theirs], { cwd });
+    if (mb.code !== 0) return { clean: null, tree: null, error: 'no merge base' };
+    mergeBase = mb.stdout.toString().trim().split('\n')[0];
+  }
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rr-merge-'));
+  const wt = path.join(tmp, 'wt');
+  fs.mkdirSync(wt);
+  const env = { GIT_DIR: path.resolve(cwd), GIT_INDEX_FILE: path.join(tmp, 'index'), GIT_WORK_TREE: wt };
+  try {
+    const rt = await run(['read-tree', '-i', '-m', '--aggressive', mergeBase, ours, theirs], { cwd, env });
+    if (rt.code !== 0) return { clean: null, tree: null, error: rt.stderr.trim() };
+    const mi = await run(['merge-index', '-o', '-q', 'git-merge-one-file', '-a'], { cwd: wt, env });
+    if (mi.code !== 0) {
+      const u = await run(['diff-files', '--name-only', '--diff-filter=U'], { cwd: wt, env });
+      const conflicts = [...new Set(u.stdout.toString().split('\n').filter(Boolean))];
+      return { clean: false, tree: null, conflicts };
+    }
+    const wtree = await run(['write-tree'], { cwd: wt, env });
+    if (wtree.code !== 0) return { clean: false, tree: null, conflicts: [] };
+    return { clean: true, tree: wtree.stdout.toString().trim() };
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+module.exports = { gitAvailable, gitVersion, hasMergeTree, mergeTree, run, git, redact, splitUrl, parseGithub, github, githubList, githubEnsureRepo, authHeader };

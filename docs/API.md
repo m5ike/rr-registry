@@ -99,6 +99,20 @@ Každá operace je dostupná ve všech klientech:
 | `gitSync` | `POST /api/v1/repos/:repo/git/:name/sync` | publish | Synchronizovat zrcadla hned {direction: pull|push|both}<br>body: json | `rr_api_git_sync` |
 | `addGitPushMirror` | `POST /api/v1/repos/:repo/git/:name/push-mirrors` | admin | Přidat push zrcadlo {url, token, username, mode: mirror|branches, createMissing, private}<br>body: json | `rr_api_add_git_push_mirror` |
 | `deleteGitPushMirror` | `DELETE /api/v1/repos/:repo/git/:name/push-mirrors/:id` | admin | Odebrat push zrcadlo | `rr_api_delete_git_push_mirror` |
+| `listGitBranches` | `GET /api/v1/repos/:repo/git/:name/branches` | read | Větve ve tvaru GitHubu [{name, commit: {sha}, protected}] | `rr_api_list_git_branches` |
+| `listGitPulls` | `GET /api/v1/repos/:repo/git/:name/pulls` | read | Pull requesty (nejnovější první); head může být „owner:větev“<br>query: `state`, `head`, `base` | `rr_api_list_git_pulls` |
+| `createGitPull` | `POST /api/v1/repos/:repo/git/:name/pulls` | publish | Vytvořit pull request {title, head, base, body, draft} (422 když větev neexistuje nebo head = base)<br>body: json | `rr_api_create_git_pull` |
+| `getGitPull` | `GET /api/v1/repos/:repo/git/:name/pulls/:number` | read | Detail pull requestu včetně mergeable / mergeable_state (clean|dirty|unknown) spočítaného z aktuálních větví | `rr_api_get_git_pull` |
+| `updateGitPull` | `PATCH /api/v1/repos/:repo/git/:name/pulls/:number` | publish | Upravit pull request {title, body, state: open|closed, base, draft}<br>body: json | `rr_api_update_git_pull` |
+| `mergeGitPull` | `PUT /api/v1/repos/:repo/git/:name/pulls/:number/merge` | publish | Sloučit pull request {merge_method: merge|squash|rebase, commit_title, commit_message, sha} → {merged, sha, message}; 405 konflikt/zavřený, 409 základní větev se změnila<br>body: json | `rr_api_merge_git_pull` |
+| `listGitPullComments` | `GET /api/v1/repos/:repo/git/:name/pulls/:number/comments` | read | Komentáře pull requestu (alias …/issues/:number/comments) | `rr_api_list_git_pull_comments` |
+| `createGitPullComment` | `POST /api/v1/repos/:repo/git/:name/pulls/:number/comments` | publish | Přidat komentář k pull requestu {body}<br>body: json | `rr_api_create_git_pull_comment` |
+| `listGitIssues` | `GET /api/v1/repos/:repo/git/:name/issues` | read | Issues (bez pull requestů, nejnovější první); labels=a,b – musí mít všechny<br>query: `state`, `labels` | `rr_api_list_git_issues` |
+| `createGitIssue` | `POST /api/v1/repos/:repo/git/:name/issues` | publish | Vytvořit issue {title, body, labels: [..]}<br>body: json | `rr_api_create_git_issue` |
+| `getGitIssue` | `GET /api/v1/repos/:repo/git/:name/issues/:number` | read | Detail issue (funguje i pro číslo pull requestu) | `rr_api_get_git_issue` |
+| `updateGitIssue` | `PATCH /api/v1/repos/:repo/git/:name/issues/:number` | publish | Upravit issue nebo pull request {title, body, state: open|closed, labels}<br>body: json | `rr_api_update_git_issue` |
+| `listGitIssueComments` | `GET /api/v1/repos/:repo/git/:name/issues/:number/comments` | read | Komentáře issue nebo pull requestu | `rr_api_list_git_issue_comments` |
+| `createGitIssueComment` | `POST /api/v1/repos/:repo/git/:name/issues/:number/comments` | publish | Přidat komentář k issue nebo pull requestu {body}<br>body: json | `rr_api_create_git_issue_comment` |
 
 ## routes
 
@@ -175,6 +189,31 @@ Každá operace je dostupná ve všech klientech:
 | `updateImport` | `PUT /api/v1/imports/:id` | admin | Výběr a schválení operací {select, approve, revoke, includeDependencies, conflict, overrides, renames, target}<br>body: json | `rr_api_update_import` |
 | `runImport` | `POST /api/v1/imports/:id/run` | admin | Spustit import vybraných a schválených operací {confirmPaths: true}<br>body: json | `rr_api_run_import` |
 | `deleteImport` | `DELETE /api/v1/imports/:id` | admin | Zahodit import (smaže dočasná data) | `rr_api_delete_import` |
+
+## Pull requesty a issues (kompatibilní s GitHubem)
+
+Operace `*GitPull*`, `*GitIssue*` a `listGitBranches` používají názvy polí GitHub REST API, takže je klient napsaný
+pro GitHub (např. ovladač AgentConf) může volat beze změn – jen s jinou základní URL
+`/api/v1/repos/<repo>/git/<název>` (název s lomítky URL-kódovaný: `tym%2Fprojekt`).
+Pull requesty a issues sdílejí jednu číselnou řadu v rámci git repozitáře (od 1). Podporu ohlašuje
+`GET /api/v1/status` a `GET /api/v1/auth/whoami` polem `features` (`git.pulls`, `git.issues`).
+
+* **Pull** `{ number, title, body, state, draft, head: {ref, sha}, base: {ref, sha}, html_url, merged, merged_at, merge_commit_sha, mergeable, mergeable_state, user: {login}, created_at, updated_at, comments }`
+* **Issue** `{ number, title, body, state, labels: [{name}], html_url, user: {login}, created_at, updated_at, closed_at, comments }`
+* **Comment** `{ id, body, user: {login}, created_at }`
+
+Chyby mají tělo `{ error, message }`: 422 neplatný vstup (větev neexistuje, head = base), 405 nelze sloučit
+(zavřený / sloučený PR, konflikt), 409 základní větev se během slučování změnila (stačí zopakovat).
+
+```bash
+R=http://localhost:4873/api/v1/repos/git/git/tym%2Fprojekt
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+     -d '{"title":"Nová funkce","head":"feature","base":"main"}' $R/pulls
+curl -s -H "Authorization: Bearer $TOKEN" "$R/pulls?state=open&head=tym:feature"
+curl -s -H "Authorization: Bearer $TOKEN" $R/pulls/1          # mergeable, mergeable_state
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+     -d '{"merge_method":"squash"}' $R/pulls/1/merge
+```
 
 ## Příklady
 

@@ -191,7 +191,8 @@ test('git: pull mirror from a remote, read-only, sync, webhook', { skip: !hasGit
   const sig = `sha256=${crypto.createHmac('sha256', secret).update(body).digest('hex')}`;
   const good = await fetch(`${base}/-/rr/hooks/git/git/mirrors/up`, { method: 'POST', headers: { 'x-hub-signature-256': sig, 'x-github-event': 'push', 'content-type': 'application/json' }, body });
   assert.strictEqual(good.status, 200);
-  assert.ok(await waitFor(async () => (await api('GET', '/repos/git/git/mirrors%2Fup')).json.branches.some((b) => b.name === 'hooked')));
+  // a GET racing with the background fetch may transiently fail (500) - keep polling
+  assert.ok(await waitFor(async () => ((await api('GET', '/repos/git/git/mirrors%2Fup')).json.branches || []).some((b) => b.name === 'hooked')));
 
   // scheduled sync honours the interval
   await api('PUT', '/repos/git/git/mirrors%2Fup', { mirror: { interval: 1 } });

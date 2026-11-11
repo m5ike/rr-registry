@@ -492,6 +492,134 @@
       "summary": "Odebrat push zrcadlo"
     },
     {
+      "id": "listGitBranches",
+      "group": "git",
+      "method": "GET",
+      "path": "/repos/:repo/git/:name/branches",
+      "auth": "read",
+      "summary": "Větve ve tvaru GitHubu [{name, commit: {sha}, protected}]"
+    },
+    {
+      "id": "listGitPulls",
+      "group": "git",
+      "method": "GET",
+      "path": "/repos/:repo/git/:name/pulls",
+      "auth": "read",
+      "summary": "Pull requesty (nejnovější první); head může být „owner:větev“",
+      "query": [
+        "state",
+        "head",
+        "base"
+      ]
+    },
+    {
+      "id": "createGitPull",
+      "group": "git",
+      "method": "POST",
+      "path": "/repos/:repo/git/:name/pulls",
+      "auth": "publish",
+      "summary": "Vytvořit pull request {title, head, base, body, draft} (422 když větev neexistuje nebo head = base)",
+      "body": "json"
+    },
+    {
+      "id": "getGitPull",
+      "group": "git",
+      "method": "GET",
+      "path": "/repos/:repo/git/:name/pulls/:number",
+      "auth": "read",
+      "summary": "Detail pull requestu včetně mergeable / mergeable_state (clean|dirty|unknown) spočítaného z aktuálních větví"
+    },
+    {
+      "id": "updateGitPull",
+      "group": "git",
+      "method": "PATCH",
+      "path": "/repos/:repo/git/:name/pulls/:number",
+      "auth": "publish",
+      "summary": "Upravit pull request {title, body, state: open|closed, base, draft}",
+      "body": "json"
+    },
+    {
+      "id": "mergeGitPull",
+      "group": "git",
+      "method": "PUT",
+      "path": "/repos/:repo/git/:name/pulls/:number/merge",
+      "auth": "publish",
+      "summary": "Sloučit pull request {merge_method: merge|squash|rebase, commit_title, commit_message, sha} → {merged, sha, message}; 405 konflikt/zavřený, 409 základní větev se změnila",
+      "body": "json"
+    },
+    {
+      "id": "listGitPullComments",
+      "group": "git",
+      "method": "GET",
+      "path": "/repos/:repo/git/:name/pulls/:number/comments",
+      "auth": "read",
+      "summary": "Komentáře pull requestu (alias …/issues/:number/comments)"
+    },
+    {
+      "id": "createGitPullComment",
+      "group": "git",
+      "method": "POST",
+      "path": "/repos/:repo/git/:name/pulls/:number/comments",
+      "auth": "publish",
+      "summary": "Přidat komentář k pull requestu {body}",
+      "body": "json"
+    },
+    {
+      "id": "listGitIssues",
+      "group": "git",
+      "method": "GET",
+      "path": "/repos/:repo/git/:name/issues",
+      "auth": "read",
+      "summary": "Issues (bez pull requestů, nejnovější první); labels=a,b – musí mít všechny",
+      "query": [
+        "state",
+        "labels"
+      ]
+    },
+    {
+      "id": "createGitIssue",
+      "group": "git",
+      "method": "POST",
+      "path": "/repos/:repo/git/:name/issues",
+      "auth": "publish",
+      "summary": "Vytvořit issue {title, body, labels: [..]}",
+      "body": "json"
+    },
+    {
+      "id": "getGitIssue",
+      "group": "git",
+      "method": "GET",
+      "path": "/repos/:repo/git/:name/issues/:number",
+      "auth": "read",
+      "summary": "Detail issue (funguje i pro číslo pull requestu)"
+    },
+    {
+      "id": "updateGitIssue",
+      "group": "git",
+      "method": "PATCH",
+      "path": "/repos/:repo/git/:name/issues/:number",
+      "auth": "publish",
+      "summary": "Upravit issue nebo pull request {title, body, state: open|closed, labels}",
+      "body": "json"
+    },
+    {
+      "id": "listGitIssueComments",
+      "group": "git",
+      "method": "GET",
+      "path": "/repos/:repo/git/:name/issues/:number/comments",
+      "auth": "read",
+      "summary": "Komentáře issue nebo pull requestu"
+    },
+    {
+      "id": "createGitIssueComment",
+      "group": "git",
+      "method": "POST",
+      "path": "/repos/:repo/git/:name/issues/:number/comments",
+      "auth": "publish",
+      "summary": "Přidat komentář k issue nebo pull requestu {body}",
+      "body": "json"
+    },
+    {
       "id": "listRoutes",
       "group": "routes",
       "method": "GET",
