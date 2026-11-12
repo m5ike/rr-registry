@@ -49,7 +49,7 @@ git config --global credential.http://localhost:4873.username admin
 | výchozí větev / popis | – | `PUT …` `{defaultBranch, description}` |
 | smazání | `rr git rm git tym/projekt` | `DELETE …` |
 
-Ve Web GUI je sekce **🌿 Git**: seznam repozitářů, import, detail s výběrem větve nebo tagu, prohlížeč souborů s náhledem README, historie commitů, větve a tagy, stahování archivů a karta „Zrcadla a nastavení“.
+Ve Web GUI je sekce **🌿 Git**: seznam repozitářů, import, detail s výběrem větve nebo tagu, prohlížeč souborů s náhledem README, historie commitů, větve a tagy, pull requesty a issues, stahování archivů a karta „Zrcadla a nastavení“.
 V bash GUI (`rr-gui`) najdete totéž v menu **G – Git repozitáře**.
 
 **Chráněné větve** (glob vzory jako `main`, `release/*`, `refs/tags/*`) nepovolují force-push ani smazání. Zajišťuje to `pre-receive` hook, který server do každého repozitáře instaluje.
@@ -110,7 +110,63 @@ Pravidla routovacího pluginu fungují i pro git repozitáře (`repoType=git`):
   ```
   Repozitář `firma/api` se pošle na `https://github.com/firma/api.git`. Úlohy běží ve frontě a selhání se 3× opakuje. Po posledním neúspěchu vznikne událost `replication.failed` a úlohu lze spustit znovu (`rr replication retry <id>`).
 
+## Pull requesty a issues
+
+Každý git repozitář má **pull requesty** a **issues** s komentáři. API používá názvy polí GitHub REST API,
+takže klient napsaný pro GitHub (např. ovladač AgentConf) s RR Registry funguje beze změn – jen s jinou základní URL
+`/api/v1/repos/<repo>/git/<název>` (název s lomítky URL-kódovaný, `tym%2Fprojekt`). Server podporu ohlašuje
+v `GET /api/v1/status` a `GET /api/v1/auth/whoami` polem `features: ["git.branches", "git.pulls", "git.issues"]`.
+
+| Akce | API (`…/repos/git/git/tym%2Fprojekt`) | Oprávnění |
+|---|---|---|
+| větve (tvar GitHubu) | `GET …/branches` → `[{name, commit: {sha}, protected}]` | read |
+| seznam PR | `GET …/pulls?state=open\|closed\|all&head=owner:větev&base=main` | read |
+| nový PR | `POST …/pulls` `{title, head, base, body, draft}` | publish |
+| detail PR + slučitelnost | `GET …/pulls/<n>` → `mergeable`, `mergeable_state: clean\|dirty\|unknown` | read |
+| úprava / zavření PR | `PATCH …/pulls/<n>` `{title, body, state, base}` | publish |
+| sloučení | `PUT …/pulls/<n>/merge` `{merge_method: merge\|squash\|rebase, commit_title, commit_message}` | publish |
+| issues | `GET …/issues?state=&labels=a,b`, `POST …/issues` `{title, body, labels}` | read / publish |
+| detail / úprava issue | `GET …/issues/<n>`, `PATCH …/issues/<n>` `{title, body, state, labels}` | read / publish |
+| komentáře (issue i PR) | `GET/POST …/issues/<n>/comments` `{body}`, alias `…/pulls/<n>/comments` | read / publish |
+
+* Pull requesty a issues sdílejí **jednu číselnou řadu** v rámci git repozitáře (od 1), stejně jako na GitHubu.
+  `GET …/issues/<n>` funguje i pro číslo pull requestu, seznam issues pull requesty nevrací.
+* `head` může být ve tvaru GitHubu `owner:větev` – porovnává se jen část za posledním `:`.
+  Duplicitní PR server neodmítá (klient si existující otevřený PR hledá sám).
+* `head.sha` a `base.sha` se počítají z aktuálních větví. Když se větev head smaže, zůstane poslední známé sha.
+  Sloučený PR si pamatuje sha z okamžiku sloučení a `merge_commit_sha`.
+* **Slučitelnost** se zjišťuje zkušebním sloučením přímo v bare repozitáři bez změny refů
+  (`git merge-tree --write-tree`, git ≥ 2.40; starší git: dočasný index + `git merge-one-file`).
+* **Sloučení** probíhá na serveru (`commit-tree` + `update-ref` s původní hodnotou jako compare-and-swap):
+  * `merge` – merge commit s rodiči [base, head] a zprávou `Merge pull request #N from <head>` + název PR (nebo `commit_title`),
+  * `squash` – jeden commit s jedním rodičem, zpráva `commit_title` nebo `<název> (#N)`,
+  * `rebase` – commity `base..head` se přehrají na base jeden po druhém (autor a zpráva zůstávají); když je base předkem head, jen se posune (fast-forward).
+
+  Autorem merge/squash commitu je přihlášený uživatel, committerem `RR Registry <rr@localhost>`
+  (změníte proměnnými `RR_GIT_COMMITTER_NAME` a `RR_GIT_COMMITTER_EMAIL`).
+  Sloučení do chráněné větve je povolené (jde o schválené sloučení, ne o force-push); do zrcadla sloučit nelze.
+* Chyby mají tělo `{error, message}`: **422** neplatný vstup (větev neexistuje, head = base, chybí název),
+  **405** nelze sloučit (zavřený nebo už sloučený PR, konflikt), **409** základní větev se během slučování změnila –
+  stačí zopakovat, žádná změna se neztratí.
+* Data se ukládají do `rr-pulls.json` v adresáři bare repozitáře – smažou se s repozitářem a export/import
+  obsahu repozitářů ([TRANSFER.md](TRANSFER.md)) je přenáší s ním.
+
+```bash
+R=http://localhost:4873/api/v1/repos/git/git/tym%2Fprojekt
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+     -d '{"title":"Nová funkce","head":"feature","base":"main"}' $R/pulls
+curl -s -H "Authorization: Bearer $TOKEN" $R/pulls/1 | grep mergeable
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+     -d '{"merge_method":"squash"}' $R/pulls/1/merge
+```
+
+Ve Web GUI má detail git repozitáře karty **Pull requesty** a **Issues**: seznam s filtrem stavu (a štítků),
+detail se slučitelností a komentáři, formuláře pro založení, tlačítko **Sloučit** s volbou merge / squash / rebase
+a zavření / znovuotevření. Odkazy `html_url` z API vedou přímo sem (`/admin/#/git/<repo>/<název>/pulls/<n>`).
+
 ## Události
 
-Akce v git repozitářích generují události `git.create`, `git.push` (seznam změněných refů), `git.sync` a `git.delete`.
+Akce v git repozitářích generují události `git.create`, `git.push` (seznam změněných refů – i po sloučení PR), `git.sync` a `git.delete`,
+pro pull requesty a issues `git.pull.opened`, `git.pull.closed`, `git.pull.reopened`, `git.pull.merged`,
+`git.issue.opened`, `git.issue.closed`, `git.issue.reopened` a `git.comment`.
 Ty lze posílat webhookem (viz [ADVANCED.md](ADVANCED.md)).

@@ -45,6 +45,7 @@ Interaktivní menu (whiptail/dialog) zapisuje `.env`:
 | `RR_UPSTREAM` | fallback registr pro nenalezené balíčky – při prvním startu | https://registry.npmjs.org |
 | `RR_CACHE_TTL` | výchozí platnost cache metadat (s) | 300 |
 | `RR_MAX_BODY_MB` | maximální velikost uploadu | 200 |
+| `RR_GIT_COMMITTER_NAME` / `RR_GIT_COMMITTER_EMAIL` | committer commitů, které vytváří server (sloučení pull requestů) | RR Registry / rr@localhost |
 | `RR_DATA_PATH` | adresář dat na hostiteli (bind mount do `/data`) | ./data |
 | `RR_UID` / `RR_GID` | uživatel procesu v kontejneru (vlastník dat) | aktuální uživatel |
 

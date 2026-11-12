@@ -9,6 +9,9 @@ const { githubList } = require('../util/git');
 const { publicRule, globToRegex } = require('../plugins/router');
 const { EVENT_TYPES } = require('../events');
 
+/** Optional capabilities clients can detect (GET /status, GET /auth/whoami). */
+const FEATURES = ['git.branches', 'git.pulls', 'git.issues'];
+
 function compile(spec) {
   return spec.operations
     .map((op) => {
@@ -84,7 +87,7 @@ function createHandlers(app) {
       if (identity.tokenId) app.auth.revokeToken(identity.tokenId);
       return { ok: true };
     },
-    whoami: ({ identity }) => ({ name: identity.name, role: identity.role, readonly: !!identity.readonly, via: identity.via }),
+    whoami: ({ identity }) => ({ name: identity.name, role: identity.role, readonly: !!identity.readonly, via: identity.via, version: app.config.version, features: FEATURES }),
 
     // ---- repositories ----
     listRepos: ({ identity }) => app.listRepos().filter((r) => app.auth.can(identity, 'read', r)).map((r) => app.repoInfo(r.name)),
@@ -191,6 +194,21 @@ function createHandlers(app) {
       send(res, 200, a.data, { 'content-type': a.file.endsWith('.zip') ? 'application/zip' : 'application/gzip', 'content-disposition': `attachment; filename="${a.file}"` });
     },
     gitSync: ({ params, body, identity }) => gitRepo(params.repo).sync(params.name, ['pull', 'push', 'both'].includes(body.direction) ? body.direction : 'both', identity),
+    // ---- git: pull requests, issues, comments (GitHub-compatible shapes) ----
+    listGitBranches: ({ params }) => gitRepo(params.repo).listBranches(params.name),
+    listGitPulls: ({ req, params, query }) => gitRepo(params.repo).listPulls(params.name, query, baseUrl(req, app.config)),
+    createGitPull: ({ req, params, body, identity }) => gitRepo(params.repo).createPull(params.name, body, identity, baseUrl(req, app.config)),
+    getGitPull: ({ req, params }) => gitRepo(params.repo).getPull(params.name, params.number, baseUrl(req, app.config)),
+    updateGitPull: ({ req, params, body, identity }) => gitRepo(params.repo).updatePull(params.name, params.number, body, identity, baseUrl(req, app.config)),
+    mergeGitPull: ({ req, params, body, identity }) => gitRepo(params.repo).mergePull(params.name, params.number, body, identity, baseUrl(req, app.config)),
+    listGitPullComments: ({ params }) => gitRepo(params.repo).listComments(params.name, params.number, 'pull'),
+    createGitPullComment: ({ params, body, identity }) => gitRepo(params.repo).addComment(params.name, params.number, body, identity, 'pull'),
+    listGitIssues: ({ req, params, query }) => gitRepo(params.repo).listIssues(params.name, query, baseUrl(req, app.config)),
+    createGitIssue: ({ req, params, body, identity }) => gitRepo(params.repo).createIssue(params.name, body, identity, baseUrl(req, app.config)),
+    getGitIssue: ({ req, params }) => gitRepo(params.repo).getIssue(params.name, params.number, baseUrl(req, app.config)),
+    updateGitIssue: ({ req, params, body, identity }) => gitRepo(params.repo).updateIssue(params.name, params.number, body, identity, baseUrl(req, app.config)),
+    listGitIssueComments: ({ params }) => gitRepo(params.repo).listComments(params.name, params.number),
+    createGitIssueComment: ({ params, body, identity }) => gitRepo(params.repo).addComment(params.name, params.number, body, identity),
     addGitPushMirror: ({ params, body, identity }) => gitRepo(params.repo).addPushMirror(params.name, body, identity),
     deleteGitPushMirror: ({ params, identity }) => gitRepo(params.repo).removePushMirror(params.name, params.id, identity),
 
@@ -439,4 +457,4 @@ function createAdminApi(app) {
   };
 }
 
-module.exports = { createAdminApi, compile };
+module.exports = { createAdminApi, compile, FEATURES };

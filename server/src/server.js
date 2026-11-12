@@ -34,7 +34,7 @@ const { Events } = require('./events');
 const { Stats } = require('./stats');
 const { Scheduler } = require('./scheduler');
 const { repoBytes } = require('./policies');
-const { createAdminApi } = require('./api/admin');
+const { createAdminApi, FEATURES } = require('./api/admin');
 const { createWeb } = require('./web');
 
 const REPO_TYPES = { npm: NpmRepo, generic: GenericRepo, docker: DockerRepo, git: GitRepo, group: GroupRepo };
@@ -389,6 +389,7 @@ class App {
       gitRepos: this.listRepos().filter((r) => r.type === 'git').reduce((n, r) => n + this.repoHandler(r.name).names().length, 0),
       webhooks: this.stores.webhooks.get().length,
       git: gitAvailable() || null,
+      features: FEATURES,
       cache: { entries: c.entries, bytes: c.bytes, hits: c.hits, misses: c.misses },
       stats: this.stats,
     };
@@ -414,7 +415,7 @@ class App {
     if (settings.cors) {
       res.setHeader('access-control-allow-origin', settings.cors);
       res.setHeader('access-control-allow-headers', 'authorization, content-type, x-rr-key, npm-command, accept');
-      res.setHeader('access-control-allow-methods', 'GET, HEAD, POST, PUT, DELETE, OPTIONS');
+      res.setHeader('access-control-allow-methods', 'GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS');
       res.setHeader('access-control-expose-headers', 'x-rr-cache, x-rr-route, content-disposition');
     }
     res.setHeader('x-powered-by', `rr-registry/${this.config.version}`);

@@ -9,6 +9,7 @@
 // Storage: <data>/repos/<repo>/<name>.git/            bare repository
 //                                 .../rr.json         metadata: description, pull mirror, push mirrors
 //                                 .../rr-protect      protected ref patterns (read by the pre-receive hook)
+//                                 .../rr-pulls.json   pull requests, issues and comments (git-pulls.js)
 //
 // Mirrors:  pull mirror - the repository is a read-only copy of a remote (GitHub, GitLab, ...), refreshed
 //                         on schedule (interval), on access after it gets stale, by webhook or manually;
@@ -22,6 +23,7 @@ const { HttpError, NotFoundLocal, send } = require('../util/http');
 const { mkdirp, writeAtomic, readJsonFile, rmrf, dirSize } = require('../util/store');
 const gitu = require('../util/git');
 const { checkQuota, invalidate } = require('../policies');
+const { pullsMixin } = require('./git-pulls');
 
 const SEG = '[A-Za-z0-9_][A-Za-z0-9_.-]*';
 const NAME_RE = new RegExp(`^${SEG}(?:/${SEG}){0,3}$`);
@@ -645,5 +647,7 @@ class GitRepo {
     });
   }
 }
+
+Object.assign(GitRepo.prototype, pullsMixin);
 
 module.exports = { GitRepo };

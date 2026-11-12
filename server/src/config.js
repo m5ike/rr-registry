@@ -40,6 +40,9 @@ function loadConfig(overrides = {}) {
     cacheTtl: Number(env.RR_CACHE_TTL || 300),
     maxBodyMb: Number(env.RR_MAX_BODY_MB || 200),
     logRequests: env.RR_LOG_REQUESTS !== '0',
+    // committer of commits the server creates itself (merging pull requests)
+    gitCommitterName: env.RR_GIT_COMMITTER_NAME || 'RR Registry',
+    gitCommitterEmail: env.RR_GIT_COMMITTER_EMAIL || 'rr@localhost',
     distDir: path.join(ROOT, 'dist'),
     webDir: path.join(ROOT, 'web'),
     specFile: path.join(ROOT, 'api', 'spec.json'),
