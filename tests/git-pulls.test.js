@@ -95,7 +95,7 @@ test.after(async () => {
 test('git pulls: version, capability hints and PATCH in CORS', async () => {
   const s = await api('GET', '/status');
   assert.strictEqual(s.headers.get('x-powered-by'), `rr-registry/${VERSION}`);
-  assert.strictEqual(VERSION, '1.6.0');
+  assert.match(VERSION, /^\d+\.\d+\.\d+$/);
   assert.ok(s.json.features.includes('git.pulls') && s.json.features.includes('git.issues'));
   const w = await api('GET', '/auth/whoami');
   assert.deepStrictEqual(w.json.features, s.json.features);

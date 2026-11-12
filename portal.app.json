@@ -3,7 +3,7 @@
   "contract": 1,
   "id": "registry",
   "name": "Registry",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "Private npm, Docker/OCI and git registry with caching proxy, generic repositories and admin UI. Every repository type is also served on its own host ({type}-registry.<domain>).",
   "category": "devtools",
   "icon": "web/assets/logo.svg",
