@@ -56,9 +56,21 @@ Soubory repozitáře
   fs cat <repo> <cesta>                 fs get <repo> <cesta> [výstup]
   fs put <repo> <cesta> <soubor>        fs rm <repo> <cesta>     fs mkdir <repo> <cesta>
 
-Git repozitáře (klonování: git clone <server>/git/<název>.git)
+Git repozitáře (klonování: git clone <server>/git/<název>.git, git-registry.<doména>/<název>.git
+               nebo ssh://git@<server>:<port>/<název>.git)
   git list <repo> [filtr]               git show <repo> <název>
-  git create <repo> <název> [popis]     git rm <repo> <název>
+  git create <repo> <název> [popis] [--private] [--readme] [--gitignore Node] [--license MIT] [--branch main]
+  git rm <repo> <název>                 git mv <repo> <název> <nový-název> [cílový-repo]
+  git visibility <repo> <název> public|private
+  git collab <repo> <název> [<uživatel> read|write|admin|remove]
+  git branch <repo> <název> [list | create <větev> [z] | rename <větev> <nová> | default <větev>
+                              | protect <větev> | unprotect <větev> | rm <větev>]
+  git tag <repo> <název> [list | create <tag> [ref] [zpráva] | rm <tag>]
+  git release <repo> <název> [list | show <id|latest|tag> | create <tag> [název] [--message M] [--notes]
+                              [--draft] [--prerelease] [--ref větev] | publish <id> | upload <id> <soubory…>
+                              | download <assetId> [soubor] | rm <id> | rm-asset <assetId>]
+  git put <repo> <název> <cesta> <soubor> [větev] [zpráva]   git rm-file <repo> <název> <cesta> [větev] [zpráva]
+  git commit <repo> <název> <sha>       (detail commitu se změnami)
   git import <repo> <název> <url> [--no-mirror] [--token T] [--interval s]
   git github <repo> <owner> [--token T] [--org|--mine] [--filter glob] [--no-mirror]
              [--forks] [--archived] [--limit N] [--prefix P] [--interval s]
@@ -69,6 +81,10 @@ Git repozitáře (klonování: git clone <server>/git/<název>.git)
   git protect <repo> <název> <větev,větev|"">
   git push-mirror add <repo> <název> <url> [--token T] [--user U] [--create] [--public] [--branches]
   git push-mirror rm <repo> <název> <id>
+
+SSH klíče (git přes SSH)
+  ssh-key list [uživatel|*]             ssh-key add [~/.ssh/id_ed25519.pub | 'ssh-ed25519 AAAA…'] [název]
+  ssh-key rm <id>
 
 Docker image
   image list <repo> | tags <repo> <image> | rm <repo> <image> <tag> | gc <repo> [--untagged]
@@ -314,7 +330,7 @@ parse_opts() {
   ARGS=()
   while [ $# -gt 0 ]; do
     case "$1" in
-      --token|--interval|--ttl|--filter|--limit|--prefix|--user) eval "OPT_${1#--}=\"\$2\""; shift 2 ;;
+      --token|--interval|--ttl|--filter|--limit|--prefix|--user|--gitignore|--license|--from|--message|--title|--branch|--ref|--description) eval "OPT_${1#--}=\"\$2\""; shift 2 ;;
       --*) eval "OPT_$(printf '%s' "${1#--}" | tr '-' '_')=1"; shift ;;
       *) ARGS+=("$1"); shift ;;
     esac
@@ -325,6 +341,8 @@ cmd_git() {
   local sub="${1:-list}"; shift || true
   OPT_token=""; OPT_interval=""; OPT_ttl=""; OPT_filter=""; OPT_limit=""; OPT_prefix=""; OPT_user=""
   OPT_no_mirror=""; OPT_org=""; OPT_user_kind=""; OPT_mine=""; OPT_forks=""; OPT_archived=""; OPT_create=""; OPT_public=""; OPT_branches=""
+  OPT_gitignore=""; OPT_license=""; OPT_from=""; OPT_message=""; OPT_title=""; OPT_branch=""; OPT_ref=""; OPT_description=""
+  OPT_private=""; OPT_readme=""; OPT_draft=""; OPT_prerelease=""; OPT_notes=""
   parse_opts "$@"
   set -- "${ARGS[@]+"${ARGS[@]}"}"
   case "$sub" in
@@ -341,7 +359,72 @@ cmd_git() {
           (.pushMirrors[] | "push →   \(.id) \(.url) [\(.status)] \(.lastPush // "")\(if .lastError then " " + .lastError else "" end)"),
           "větve:", (.branches[] | "  \(.name)\t\(.commit[0:8])  \(.date)  \(.subject)"), "tagy:", (.tags[] | "  \(.name)\t\(.commit[0:8])")'
       else rr_api_get_git_repo "$1" "$2"; fi ;;
-    create|new) need 2 "$@"; rr_api_create_git_repo "$1" "$(kv_json "name==$2" "description==${3:-}")" | rr_json '{name, cloneUrl, defaultBranch}' ;;
+    create|new)
+      need 2 "$@"
+      local vis=public readme=false; [ -n "$OPT_private" ] && vis=private; [ -n "$OPT_readme" ] && readme=true
+      rr_api_create_git_repo "$1" "$(kv_json "name==$2" "description==${3:-$OPT_description}" "visibility==$vis" "readme=$readme" "gitignore==$OPT_gitignore" "license==$OPT_license" "defaultBranch==${OPT_branch:-main}")" | rr_json '{name, visibility, owner, defaultBranch, cloneUrls}' ;;
+    mv|move|rename) need 3 "$@"; rr_api_move_git_repo "$1" "$2" "$(kv_json "name==$3" "repo==${4:-$1}")" | rr_json '{repo, name, cloneUrl}' ;;
+    visibility) need 3 "$@"; rr_api_set_git_access "$1" "$2" "$(kv_json "visibility==$3")" | rr_json ;;
+    collab)
+      need 2 "$@"
+      if [ $# -lt 4 ]; then rr_api_get_git_repo "$1" "$2" | rr_json '{owner, visibility, collaborators}'; return; fi
+      rr_have_jq || rr_die "rr git collab potřebuje jq"
+      local cur; cur=$(rr_api_get_git_repo "$1" "$2" | jq -c '.collaborators') || return 1
+      if [ "$4" = "remove" ] || [ "$4" = "rm" ]; then cur=$(printf '%s' "$cur" | jq -c --arg u "$3" 'del(.[$u])')
+      else cur=$(printf '%s' "$cur" | jq -c --arg u "$3" --arg r "$4" '.[$u]=$r'); fi
+      rr_api_set_git_access "$1" "$2" "{\"collaborators\":$cur}" | rr_json ;;
+    branch|branches)
+      need 2 "$@"; local r="$1" n="$2" act="${3:-list}"; shift 3 2>/dev/null || shift $#
+      case "$act" in
+        list|ls)
+          if rr_have_jq; then rr_api_list_git_branches "$r" "$n" "detailed=1" | jq -r '(["BRANCH","DEFAULT","PROTECTED","BEHIND","AHEAD","LAST COMMIT"]|@tsv),(.[]|[.name,(if .default then "*" else "-" end),(if .protected then "yes" else "-" end),(if .default then "-" else .behind end),(if .default then "-" else .ahead end),"\(.commit[0:8]) \(.subject)"]|@tsv)' | column -t -s $'\t'
+          else rr_api_list_git_branches "$r" "$n" "detailed=1"; fi ;;
+        create|new) need 1 "$@"; rr_api_create_git_branch "$r" "$n" "$(kv_json "name==$1" "from==${2:-${OPT_from:-HEAD}}")" | rr_json ;;
+        rename|mv) need 2 "$@"; rr_api_update_git_branch "$r" "$n" "$1" "$(kv_json "name==$2")" | rr_json ;;
+        default) need 1 "$@"; rr_api_update_git_branch "$r" "$n" "$1" '{"default":true}' | rr_json '{name, default}' ;;
+        protect) need 1 "$@"; rr_api_update_git_branch "$r" "$n" "$1" '{"protected":true}' | rr_json '{name, protected}' ;;
+        unprotect) need 1 "$@"; rr_api_update_git_branch "$r" "$n" "$1" '{"protected":false}' | rr_json '{name, protected}' ;;
+        rm|delete) need 1 "$@"; rr_api_delete_git_branch "$r" "$n" "$1" | rr_json ;;
+        *) rr_die "git branch <repo> <název> list|create|rename|default|protect|unprotect|rm" ;;
+      esac ;;
+    tag|tags)
+      need 2 "$@"; local r="$1" n="$2" act="${3:-list}"; shift 3 2>/dev/null || shift $#
+      case "$act" in
+        list|ls)
+          if rr_have_jq; then rr_api_list_git_tags "$r" "$n" | jq -r '(["TAG","COMMIT","TYPE","DATE","MESSAGE"]|@tsv),(.[]|[.name,.commit[0:8],(if .annotated then "annotated" else "light" end),(.date//"")[0:19],.message]|@tsv)' | column -t -s $'\t'
+          else rr_api_list_git_tags "$r" "$n"; fi ;;
+        create|new) need 1 "$@"; rr_api_create_git_tag "$r" "$n" "$(kv_json "tag==$1" "ref==${2:-${OPT_ref:-HEAD}}" "message==${3:-$OPT_message}")" | rr_json ;;
+        rm|delete) need 1 "$@"; rr_api_delete_git_tag "$r" "$n" "$1" | rr_json ;;
+        *) rr_die "git tag <repo> <název> list|create <tag> [ref] [zpráva]|rm <tag>" ;;
+      esac ;;
+    release|releases)
+      need 2 "$@"; local r="$1" n="$2" act="${3:-list}"; shift 3 2>/dev/null || shift $#
+      case "$act" in
+        list|ls)
+          if rr_have_jq; then rr_api_list_git_releases "$r" "$n" | jq -r '(["ID","TAG","NAME","STATE","PUBLISHED","ASSETS"]|@tsv),(.[]|[.id,.tag_name,.name,(if .draft then "draft" elif .prerelease then "pre" else "release" end),(.published_at//"")[0:19],(.assets|map(.name)|join(","))]|@tsv)' | column -t -s $'\t'
+          else rr_api_list_git_releases "$r" "$n"; fi ;;
+        show) need 1 "$@"; if [ "$1" = latest ] || printf '%s' "$1" | grep -qE '^[0-9]+$'; then rr_api_get_git_release "$r" "$n" "$1" | rr_json; else rr_api_get_git_release_by_tag "$r" "$n" "$1" | rr_json; fi ;;
+        create|new)
+          need 1 "$@"
+          local draft=false pre=false notes=false
+          [ -n "$OPT_draft" ] && draft=true; [ -n "$OPT_prerelease" ] && pre=true; [ -n "$OPT_notes" ] && notes=true
+          rr_api_create_git_release "$r" "$n" "$(kv_json "tag_name==$1" "name==${2:-${OPT_title:-$1}}" "body==${OPT_message:-}" "target_commitish==${OPT_ref:-}" "draft=$draft" "prerelease=$pre" "generate_release_notes=$notes")" | rr_json '{id, tag_name, name, draft, prerelease, html_url}' ;;
+        publish) need 1 "$@"; rr_api_update_git_release "$r" "$n" "$1" '{"draft":false}' | rr_json '{id, tag_name, draft, published_at}' ;;
+        upload)
+          need 2 "$@"; local id="$1"; shift
+          for f in "$@"; do rr_api_upload_git_release_asset "$r" "$n" "$id" "$f" "$(rr_query "name=$(basename "$f")")" | rr_json '{id, name, size, browser_download_url}'; done ;;
+        download) need 1 "$@"; local out="${2:-asset-$1}"; RR_OUT="$out" rr_api_download_git_release_asset "$r" "$n" "$1" && echo "uloženo: $out" ;;
+        rm|delete) need 1 "$@"; rr_api_delete_git_release "$r" "$n" "$1" | rr_json ;;
+        rm-asset) need 1 "$@"; rr_api_delete_git_release_asset "$r" "$n" "$1" | rr_json ;;
+        *) rr_die "git release <repo> <název> list|show|create <tag> [název]|publish <id>|upload <id> <soubory…>|download <assetId> [soubor]|rm <id>|rm-asset <assetId>" ;;
+      esac ;;
+    put)
+      need 4 "$@"
+      [ -f "$4" ] || rr_die "soubor $4 neexistuje"
+      local b64; b64=$(base64 < "$4" | tr -d '\n')
+      rr_api_put_git_file "$1" "$2" "$(kv_json "path==$3" "content==$b64" "encoding==base64" "branch==${5:-$OPT_branch}" "message==${6:-$OPT_message}")" | rr_json '{commit: .commit.sha, branch: .commit.branch, files}' ;;
+    rm-file) need 3 "$@"; rr_api_delete_git_file "$1" "$2" "$(rr_query "path=$3" "branch=${4:-$OPT_branch}" "message=${5:-$OPT_message}")" | rr_json '{commit: .commit.sha, deleted}' ;;
+    commit) need 3 "$@"; rr_api_git_commit "$1" "$2" "$3" | rr_json '{commit, author, date, subject, stats, files: [.files[] | {path, status, additions, deletions}]}' ;;
     import)
       need 3 "$@"
       local mirror=true; [ -n "$OPT_no_mirror" ] && mirror=false
@@ -388,6 +471,21 @@ cmd_git() {
       esac ;;
     rm|delete) need 2 "$@"; rr_api_delete_git_repo "$1" "$2" | rr_json ;;
     *) rr_die "neznámý příkaz git $sub" ;;
+  esac
+}
+
+cmd_ssh_key() {
+  local sub="${1:-list}"; shift || true
+  case "$sub" in
+    list|ls)
+      if rr_have_jq; then rr_api_list_ssh_keys "$(rr_query "user=${1:-}")" | jq -r '(["ID","USER","TITLE","TYPE","FINGERPRINT","LAST USED"]|@tsv),(.[]|[.id,.user,.title,.type,.fingerprint,(.lastUsed//"-")]|@tsv)' | column -t -s $'\t'
+      else rr_api_list_ssh_keys "$(rr_query "user=${1:-}")"; fi ;;
+    add)
+      local key="${1:-$HOME/.ssh/id_ed25519.pub}"
+      [ -f "$key" ] && key=$(cat "$key")
+      rr_api_add_ssh_key "$(kv_json "key==$key" "title==${2:-}")" | rr_json '{id, title, type, fingerprint}' ;;
+    rm|delete) need 1 "$@"; rr_api_delete_ssh_key "$1" | rr_json ;;
+    *) rr_die "ssh-key list|add [soubor.pub|klíč] [název]|rm <id>" ;;
   esac
 }
 
@@ -557,6 +655,7 @@ main() {
     search) cmd_search "$@" ;;
     fs|files) cmd_fs "$@" ;;
     git) cmd_git "$@" ;;
+    ssh-key|ssh-keys|keys) cmd_ssh_key "$@" ;;
     image|images|docker) cmd_image "$@" ;;
     webhook|webhooks|hook) cmd_webhook "$@" ;;
     events)

@@ -9,7 +9,7 @@ const EVENT_TYPES = [
   'npm.publish', 'npm.unpublish', 'npm.tag', 'npm.deprecate',
   'file.upload', 'file.delete',
   'docker.push', 'docker.delete',
-  'git.create', 'git.push', 'git.sync', 'git.delete',
+  'git.create', 'git.push', 'git.sync', 'git.delete', 'git.move', 'git.release',
   'git.pull.opened', 'git.pull.closed', 'git.pull.reopened', 'git.pull.merged',
   'git.issue.opened', 'git.issue.closed', 'git.issue.reopened', 'git.comment',
   'repo.create', 'repo.update', 'repo.delete', 'repo.cleanup',

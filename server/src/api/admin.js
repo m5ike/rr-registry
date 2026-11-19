@@ -8,9 +8,10 @@ const { checkQuota, assertMutable, invalidate } = require('../policies');
 const { githubList } = require('../util/git');
 const { publicRule, globToRegex } = require('../plugins/router');
 const { EVENT_TYPES } = require('../events');
+const { templates, GITIGNORE, licenseText } = require('../repos/git-templates');
 
 /** Optional capabilities clients can detect (GET /status, GET /auth/whoami). */
-const FEATURES = ['git.branches', 'git.pulls', 'git.issues'];
+const FEATURES = ['git.branches', 'git.pulls', 'git.issues', 'git.tags', 'git.releases', 'git.contents', 'git.visibility', 'git.move', 'ssh'];
 
 function compile(spec) {
   return spec.operations
@@ -42,6 +43,13 @@ function createHandlers(app) {
     if (h.conf.type !== 'git') throw new HttpError(400, `repository ${name} is not a git repository`);
     return h;
   };
+  /** [handler, canonical name] of a git repository the caller may access with `need` (read | write | admin). */
+  const git = (params, identity, need) => {
+    const h = gitRepo(params.repo);
+    return [h, h.access(params.name, identity, need)];
+  };
+  /** Requests on the git type host (git-registry.<domain>) get URLs without /git. */
+  const direct = (req, params) => req._typeHostType === 'git' && app.typeHosts.repoFor('git') === params.repo;
   const npmRepo = (name) => {
     const h = app.repoHandler(name);
     if (h.conf.type !== 'npm') throw new HttpError(400, `repository ${name} is not an npm repository`);
@@ -111,7 +119,7 @@ function createHandlers(app) {
     getRepoStats: ({ params, query }) => app.statsStore.get(params.repo, { top: query.top }),
 
     // ---- packages ----
-    listPackages: ({ params, query }) => app.repoHandler(params.repo).listPackages(query.q || ''),
+    listPackages: ({ params, query, identity }) => app.repoHandler(params.repo).listPackages(query.q || '', identity),
     // ---- docker ----
     listImages: ({ params }) => dockerRepo(params.repo).images(),
     listImageTags: ({ params }) => dockerRepo(params.repo).tagDetails(params.image),
@@ -129,13 +137,29 @@ function createHandlers(app) {
       return r;
     },
     // ---- git ----
-    listGitRepos: ({ params, query }) => gitRepo(params.repo).list(query.q || ''),
-    createGitRepo: ({ params, body, identity }) => {
+    // Every git operation checks the repository level too (private repositories, owner, collaborators):
+    // read = see / clone, write = push-like changes, admin = settings, visibility, move, delete.
+    listGitRepos: ({ params, query, identity }) => gitRepo(params.repo).list(query.q || '', identity),
+    // names, or the content of one template (?gitignore=Node | ?license=MIT&holder=...)
+    gitTemplates: ({ query }) => {
+      if (query.gitignore) {
+        if (!GITIGNORE[query.gitignore]) throw new HttpError(404, `unknown .gitignore template ${query.gitignore}`);
+        return { name: query.gitignore, content: GITIGNORE[query.gitignore] };
+      }
+      if (query.license) {
+        const content = licenseText(query.license, String(query.holder || 'the authors').slice(0, 100));
+        if (!content) throw new HttpError(404, `unknown licence ${query.license}`);
+        return { name: query.license, content };
+      }
+      return templates();
+    },
+    createGitRepo: async ({ req, params, body, identity }) => {
       const h = gitRepo(params.repo);
       if (h.conf.allowPublish === false) throw new HttpError(403, `repository ${params.repo} does not allow publishing`);
       // imports reach out to arbitrary URLs (incl. file://) - admin only
       if (body.importUrl && identity.role !== 'admin') throw new HttpError(403, 'only admin can import or mirror repositories');
-      return h.create(body.name, body, identity);
+      const g = await h.create(body.name, body, identity);
+      return h.info(g.name, baseUrl(req, app.config), { identity, direct: direct(req, params) });
     },
     githubImport: async ({ params, body, identity }) => {
       const h = gitRepo(params.repo);
@@ -175,42 +199,136 @@ function createHandlers(app) {
       app.audit(identity, 'github-import', `${params.repo} <- ${owner || 'me'}: ${results.filter((x) => x.status === 'created').length} created`);
       return { owner: owner || null, found: list.length, selected: selected.length, results };
     },
-    getGitRepo: ({ req, params }) => gitRepo(params.repo).info(params.name, baseUrl(req, app.config)),
-    updateGitRepo: ({ params, body, identity }) => gitRepo(params.repo).update(params.name, body, identity),
+    getGitRepo: ({ req, params, identity }) => {
+      const [h, name] = git(params, identity, 'read');
+      return h.info(name, baseUrl(req, app.config), { identity, direct: direct(req, params) });
+    },
+    updateGitRepo: async ({ req, params, body, identity }) => {
+      const [h, name] = git(params, identity, 'admin');
+      // mirrors fetch from arbitrary URLs (incl. file://) - registry administrators only
+      if (body.mirror !== undefined && identity.role !== 'admin') throw new HttpError(403, 'only admin can configure mirrors');
+      await h.update(name, body, identity);
+      return h.info(name, baseUrl(req, app.config), { identity, direct: direct(req, params) });
+    },
     deleteGitRepo: ({ params, identity }) => {
-      const h = gitRepo(params.repo);
+      const [h, name] = git(params, identity, 'admin');
       assertMutable(h.conf, 'deleting git repositories');
-      return h.remove(params.name, identity);
+      return h.remove(name, identity);
     },
-    gitCommits: ({ params, query }) => gitRepo(params.repo).commits(params.name, query),
-    gitTree: ({ params, query }) => gitRepo(params.repo).tree(params.name, query),
-    gitBlob: async ({ res, params, query }) => {
-      const data = await gitRepo(params.repo).blob(params.name, query);
-      send(res, 200, data, { 'content-type': mimeType(String(query.path || '')), 'content-disposition': `inline; filename="${String(query.path || 'file').split('/').pop()}"` });
+    moveGitRepo: async ({ req, params, body, identity }) => {
+      const [h, name] = git(params, identity, 'admin');
+      const r = await h.move(name, body, identity);
+      return gitRepo(r.repo).info(r.name, baseUrl(req, app.config), { identity, direct: direct(req, { repo: r.repo }) });
     },
-    gitArchive: async ({ res, params, query }) => {
-      const a = await gitRepo(params.repo).archive(params.name, query);
-      app.statsStore.hit(params.repo, params.name);
+    setGitAccess: ({ params, body, identity }) => {
+      const [h, name] = git(params, identity, 'admin');
+      return h.setAccess(name, body, identity);
+    },
+    gitCommits: ({ params, query, identity }) => { const [h, name] = git(params, identity, 'read'); return h.commits(name, query); },
+    gitCommit: ({ params, identity }) => { const [h, name] = git(params, identity, 'read'); return h.commitDetail(name, params.sha); },
+    gitTree: ({ params, query, identity }) => { const [h, name] = git(params, identity, 'read'); return h.tree(name, query); },
+    gitBlob: async ({ res, params, query, identity }) => {
+      const [h, name] = git(params, identity, 'read');
+      const data = await h.blob(name, query);
+      send(res, 200, data, { 'content-type': mimeType(String(query.path || '')), 'content-disposition': `inline; filename="${String(query.path || 'file').split('/').pop()}"`, 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox" });
+    },
+    gitArchive: async ({ res, params, query, identity }) => {
+      const [h, name] = git(params, identity, 'read');
+      const a = await h.archive(name, query);
+      app.statsStore.hit(params.repo, name);
       send(res, 200, a.data, { 'content-type': a.file.endsWith('.zip') ? 'application/zip' : 'application/gzip', 'content-disposition': `attachment; filename="${a.file}"` });
     },
-    gitSync: ({ params, body, identity }) => gitRepo(params.repo).sync(params.name, ['pull', 'push', 'both'].includes(body.direction) ? body.direction : 'both', identity),
+    gitSync: ({ params, body, identity }) => { const [h, name] = git(params, identity, 'admin'); return h.sync(name, ['pull', 'push', 'both'].includes(body.direction) ? body.direction : 'both', identity); },
+    // ---- git: branches, tags ----
+    listGitBranches: ({ params, query, identity }) => {
+      const [h, name] = git(params, identity, 'read');
+      return bool(query.detailed) ? h.branchList(name) : h.listBranches(name);
+    },
+    createGitBranch: ({ req, params, body, identity }) => { const [h, name] = git(params, identity, 'write'); return h.createBranch(name, body, identity, baseUrl(req, app.config)); },
+    updateGitBranch: async ({ req, params, body, identity }) => {
+      let [h, name] = git(params, identity, 'write');
+      let branch = params.branch;
+      if (body.name !== undefined && body.name !== branch) branch = (await h.renameBranch(name, branch, body.name, identity, baseUrl(req, app.config))).name;
+      if (body.default === true || body.default === 'true' || body.protected !== undefined) {
+        [h, name] = git(params, identity, 'admin');
+        const m = h.meta(name);
+        const upd = {};
+        if (body.default === true || body.default === 'true') upd.defaultBranch = branch;
+        if (body.protected !== undefined) {
+          const set = new Set(m.protectedBranches || []);
+          if (body.protected === true || body.protected === 'true') set.add(branch); else set.delete(branch);
+          upd.protectedBranches = [...set];
+        }
+        await h.update(name, upd, identity);
+      }
+      return (await h.branchList(name)).find((b) => b.name === branch) || { name: branch };
+    },
+    deleteGitBranch: ({ req, params, identity }) => { const [h, name] = git(params, identity, 'write'); return h.deleteBranch(name, params.branch, identity, baseUrl(req, app.config)); },
+    listGitTags: ({ params, identity }) => { const [h, name] = git(params, identity, 'read'); return h.tagList(name); },
+    createGitTag: ({ req, params, body, identity }) => { const [h, name] = git(params, identity, 'write'); return h.createTag(name, body, identity, baseUrl(req, app.config)); },
+    deleteGitTag: ({ req, params, identity }) => { const [h, name] = git(params, identity, 'write'); return h.deleteTag(name, params.tag, identity, baseUrl(req, app.config)); },
+    // ---- git: releases ----
+    listGitReleases: ({ req, params, identity }) => {
+      const [h, name] = git(params, identity, 'read');
+      return h.listReleases(name, { includeDrafts: h.permissions(name, identity).write }, baseUrl(req, app.config));
+    },
+    createGitRelease: ({ req, params, body, identity }) => { const [h, name] = git(params, identity, 'write'); return h.createRelease(name, body, identity, baseUrl(req, app.config)); },
+    getGitRelease: ({ req, params, identity }) => {
+      const [h, name] = git(params, identity, 'read');
+      return h.getRelease(name, params.id, { includeDrafts: h.permissions(name, identity).write }, baseUrl(req, app.config));
+    },
+    getGitReleaseByTag: ({ req, params, identity }) => {
+      const [h, name] = git(params, identity, 'read');
+      return h.getRelease(name, null, { tag: params.tag, includeDrafts: h.permissions(name, identity).write }, baseUrl(req, app.config));
+    },
+    updateGitRelease: ({ req, params, body, identity }) => { const [h, name] = git(params, identity, 'write'); return h.updateRelease(name, params.id, body, identity, baseUrl(req, app.config)); },
+    deleteGitRelease: ({ params, identity }) => { const [h, name] = git(params, identity, 'write'); return h.deleteRelease(name, params.id, identity); },
+    uploadGitReleaseAsset: async ({ req, params, query, identity }) => {
+      const [h, name] = git(params, identity, 'write');
+      const data = await readBody(req, app.config.maxBody);
+      const ct = String(req.headers['content-type'] || '').split(';')[0].trim();
+      const contentType = !ct || ct === 'application/octet-stream' ? mimeType(String(query.name || '')) : ct;
+      return h.uploadAsset(name, params.id, { filename: query.name, label: query.label, contentType, data }, identity, baseUrl(req, app.config));
+    },
+    downloadGitReleaseAsset: async ({ res, params, identity }) => {
+      const [h, name] = git(params, identity, 'read');
+      const a = await h.assetFile(name, params.asset);
+      if (a.draft && !h.permissions(name, identity).write) throw new HttpError(404, `asset ${params.asset} not found`);
+      res.writeHead(200, { 'content-type': a.contentType || 'application/octet-stream', 'content-length': a.size, 'content-disposition': `attachment; filename="${a.name.replace(/"/g, '')}"`, 'x-content-type-options': 'nosniff' });
+      await new Promise((resolve, reject) => fs.createReadStream(a.file).on('error', reject).on('end', resolve).pipe(res));
+    },
+    deleteGitReleaseAsset: ({ params, identity }) => { const [h, name] = git(params, identity, 'write'); return h.deleteAsset(name, params.asset, identity); },
+    // ---- git: files (commits from the web) ----
+    putGitFile: ({ req, params, body, identity }) => {
+      const [h, name] = git(params, identity, 'write');
+      return h.commitFiles(name, { branch: body.branch, from: body.from, message: body.message, files: [{ path: body.path, content: body.content, encoding: body.encoding, sha: body.sha, create: body.create === true || body.create === 'true' }] }, identity, baseUrl(req, app.config));
+    },
+    deleteGitFile: ({ req, params, query, identity }) => {
+      const [h, name] = git(params, identity, 'write');
+      return h.commitFiles(name, { branch: query.branch, message: query.message, deletes: [{ path: query.path, sha: query.sha }] }, identity, baseUrl(req, app.config));
+    },
+    commitGitFiles: ({ req, params, body, identity }) => { const [h, name] = git(params, identity, 'write'); return h.commitFiles(name, body, identity, baseUrl(req, app.config)); },
     // ---- git: pull requests, issues, comments (GitHub-compatible shapes) ----
-    listGitBranches: ({ params }) => gitRepo(params.repo).listBranches(params.name),
-    listGitPulls: ({ req, params, query }) => gitRepo(params.repo).listPulls(params.name, query, baseUrl(req, app.config)),
-    createGitPull: ({ req, params, body, identity }) => gitRepo(params.repo).createPull(params.name, body, identity, baseUrl(req, app.config)),
-    getGitPull: ({ req, params }) => gitRepo(params.repo).getPull(params.name, params.number, baseUrl(req, app.config)),
-    updateGitPull: ({ req, params, body, identity }) => gitRepo(params.repo).updatePull(params.name, params.number, body, identity, baseUrl(req, app.config)),
-    mergeGitPull: ({ req, params, body, identity }) => gitRepo(params.repo).mergePull(params.name, params.number, body, identity, baseUrl(req, app.config)),
-    listGitPullComments: ({ params }) => gitRepo(params.repo).listComments(params.name, params.number, 'pull'),
-    createGitPullComment: ({ params, body, identity }) => gitRepo(params.repo).addComment(params.name, params.number, body, identity, 'pull'),
-    listGitIssues: ({ req, params, query }) => gitRepo(params.repo).listIssues(params.name, query, baseUrl(req, app.config)),
-    createGitIssue: ({ req, params, body, identity }) => gitRepo(params.repo).createIssue(params.name, body, identity, baseUrl(req, app.config)),
-    getGitIssue: ({ req, params }) => gitRepo(params.repo).getIssue(params.name, params.number, baseUrl(req, app.config)),
-    updateGitIssue: ({ req, params, body, identity }) => gitRepo(params.repo).updateIssue(params.name, params.number, body, identity, baseUrl(req, app.config)),
-    listGitIssueComments: ({ params }) => gitRepo(params.repo).listComments(params.name, params.number),
-    createGitIssueComment: ({ params, body, identity }) => gitRepo(params.repo).addComment(params.name, params.number, body, identity),
-    addGitPushMirror: ({ params, body, identity }) => gitRepo(params.repo).addPushMirror(params.name, body, identity),
-    deleteGitPushMirror: ({ params, identity }) => gitRepo(params.repo).removePushMirror(params.name, params.id, identity),
+    listGitPulls: ({ req, params, query, identity }) => { const [h, name] = git(params, identity, 'read'); return h.listPulls(name, query, baseUrl(req, app.config)); },
+    createGitPull: ({ req, params, body, identity }) => { const [h, name] = git(params, identity, 'write'); return h.createPull(name, body, identity, baseUrl(req, app.config)); },
+    getGitPull: ({ req, params, identity }) => { const [h, name] = git(params, identity, 'read'); return h.getPull(name, params.number, baseUrl(req, app.config)); },
+    updateGitPull: ({ req, params, body, identity }) => { const [h, name] = git(params, identity, 'write'); return h.updatePull(name, params.number, body, identity, baseUrl(req, app.config)); },
+    mergeGitPull: ({ req, params, body, identity }) => { const [h, name] = git(params, identity, 'write'); return h.mergePull(name, params.number, body, identity, baseUrl(req, app.config)); },
+    listGitPullComments: ({ params, identity }) => { const [h, name] = git(params, identity, 'read'); return h.listComments(name, params.number, 'pull'); },
+    createGitPullComment: ({ params, body, identity }) => { const [h, name] = git(params, identity, 'write'); return h.addComment(name, params.number, body, identity, 'pull'); },
+    listGitIssues: ({ req, params, query, identity }) => { const [h, name] = git(params, identity, 'read'); return h.listIssues(name, query, baseUrl(req, app.config)); },
+    createGitIssue: ({ req, params, body, identity }) => { const [h, name] = git(params, identity, 'write'); return h.createIssue(name, body, identity, baseUrl(req, app.config)); },
+    getGitIssue: ({ req, params, identity }) => { const [h, name] = git(params, identity, 'read'); return h.getIssue(name, params.number, baseUrl(req, app.config)); },
+    updateGitIssue: ({ req, params, body, identity }) => { const [h, name] = git(params, identity, 'write'); return h.updateIssue(name, params.number, body, identity, baseUrl(req, app.config)); },
+    listGitIssueComments: ({ params, identity }) => { const [h, name] = git(params, identity, 'read'); return h.listComments(name, params.number); },
+    createGitIssueComment: ({ params, body, identity }) => { const [h, name] = git(params, identity, 'write'); return h.addComment(name, params.number, body, identity); },
+    addGitPushMirror: ({ params, body, identity }) => { const [h, name] = git(params, identity, 'admin'); return h.addPushMirror(name, body, identity); },
+    deleteGitPushMirror: ({ params, identity }) => { const [h, name] = git(params, identity, 'admin'); return h.removePushMirror(name, params.id, identity); },
+
+    // ---- SSH keys ----
+    listSshKeys: ({ query, identity }) => app.sshKeys.list(identity, query.user),
+    addSshKey: ({ body, identity }) => app.sshKeys.add(identity, body),
+    deleteSshKey: ({ params, identity }) => app.sshKeys.remove(identity, params.id),
 
     uploadPackage: async ({ req, params, query, identity }) => {
       const conf = app.repoConfig(params.repo);

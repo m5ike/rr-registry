@@ -8,6 +8,40 @@
     set(k, v) { try { if (v) localStorage.setItem(`rr.${k}`, v); else localStorage.removeItem(`rr.${k}`); } catch { /* ignore */ } },
   };
   const { icon, wm } = RRUI;
+  // On a type host (git-registry.<domain>, npm-registry.<domain>, ...) only that registry type is shown and the
+  // browser path is the route (git-registry/<owner>/<name>/tree/main) - no "#/git/<repository>" in the URL.
+  // Internally every view still works with "#/view/..." routes; these helpers translate between the two.
+  const TH = CFG.typeHost || null;
+  const TYPE_VIEW = { git: 'git', npm: 'packages', docker: 'images' };
+  function internalFromPath(pathname, search) {
+    const parts = pathname.split('/').filter(Boolean);
+    const qs = search || '';
+    if (parts[0] === '_') return `#/${parts.slice(1).join('/')}${qs}`;
+    const repo = encodeURIComponent(TH.repo || '');
+    if (TH.type === 'git') return `#/git/${repo}${parts.length ? `/${parts.join('/')}` : ''}${qs}`;
+    if (TH.type === 'npm') return parts.length ? `#/pkg/${repo}/${encodeURIComponent(parts.map(decodeURIComponent).join('/'))}${qs}` : `#/packages/${repo}${qs}`;
+    if (TH.type === 'docker') return `#/images/${repo}${parts.length ? `/${parts.join('/')}` : ''}${qs}`;
+    return `#/${parts.join('/')}${qs}`;
+  }
+  function pathFromInternal(hash) {
+    const [p, q] = hash.replace(/^#\/?/, '').split('?');
+    const qs = q ? `?${q}` : '';
+    const parts = p.split('/').filter(Boolean);
+    const [view, repo, ...rest] = parts;
+    const same = !repo || decodeURIComponent(repo) === TH.repo;
+    if (TH.type === 'git' && view === 'git' && same) return `/${rest.join('/')}${qs}`;
+    if (TH.type === 'npm' && view === 'packages' && same) return `/${qs}`;
+    if (TH.type === 'npm' && view === 'pkg' && same && rest.length) return `/${decodeURIComponent(rest.join('/'))}${qs}`;
+    if (TH.type === 'docker' && view === 'images' && same) return `/${rest.join('/')}${qs}`;
+    return `/_/${parts.join('/')}${qs}`;
+  }
+  /** The current route in "#/view/..." form (main host: the hash, type host: from the path). */
+  function currentRoute() {
+    if (!TH) return location.hash || '#/dashboard';
+    if (location.hash.startsWith('#/')) return location.hash;
+    return internalFromPath(location.pathname, location.search);
+  }
+  const routeQuery = () => new URLSearchParams(currentRoute().split('?')[1] || '');
   let rr = null;
   let me = null;
   let refreshTimer = null;
@@ -105,6 +139,7 @@
     const o = {};
     for (const el of form.elements) {
       if (!el.name) continue;
+      if (el.type === 'radio') { if (el.checked) o[el.name] = el.value; else if (!(el.name in o)) o[el.name] = ''; continue; }
       if (el.type === 'checkbox') o[el.name] = el.checked;
       else if (el.type === 'number') o[el.name] = el.value === '' ? null : Number(el.value);
       else o[el.name] = el.value;
@@ -544,7 +579,7 @@
     repoCache = await rr.listRepos();
     if (!repos.length) return setView('Balíčky', '<div class="card">Žádný npm repozitář.</div>', 'package');
     const repo = repoName || (repos.find((r) => r.default) || repos[0]).name;
-    const q = new URLSearchParams(location.hash.split('?')[1] || '').get('q') || '';
+    const q = routeQuery().get('q') || '';
     const list = await rr.listPackages(repo);
     const isGroup = (repos.find((r) => r.name === repo) || {}).type === 'group';
     const v = setView('Balíčky', '<div id="t"></div>', 'package');
@@ -767,7 +802,7 @@
 
   // ---------------------------------------------------------------- search
   views.search = async () => {
-    const q = new URLSearchParams(location.hash.split('?')[1] || '').get('q') || '';
+    const q = routeQuery().get('q') || '';
     const res = q ? await rr.search({ q, size: 200 }) : { objects: [], total: 0 };
     const v = setView('Hledání', `
       <form class="card row" id="sf" style="padding:12px"><label class="dt-search" style="flex:1">${icon('search', 18)}<span class="sr">Hledat</span><input id="q" type="search" value="${esc(q)}" placeholder="název, popis, keywords:xyz, scope:firma, maintainer:m5ike"></label><button class="btn primary">Hledat</button></form>
@@ -788,352 +823,12 @@
     return v;
   };
 
-  // ---------------------------------------------------------------- git list
-  views.git = async (repoName, ...rest) => {
-    const repos = (await rr.listRepos()).filter((r) => r.type === 'git');
-    if (!repos.length) return setView('Git', '<div class="card"><p class="muted">Žádný repozitář typu git – vytvořte ho v sekci Repozitáře (typ git).</p></div>', 'git');
-    const repo = repos.find((r) => r.name === repoName) || repos.find((r) => r.gitDefault) || repos[0];
-    // …/<název>/pulls[/<n>] and …/<název>/issues[/<n>] (html_url of the pull request / issue API)
-    let sub = null;
-    const kindAt = rest.length >= 3 && /^\d+$/.test(rest[rest.length - 1]) ? rest.length - 2 : rest.length >= 2 ? rest.length - 1 : -1;
-    if (kindAt > 0 && ['pulls', 'issues'].includes(rest[kindAt])) {
-      sub = { tab: rest[kindAt], number: rest[kindAt + 1] ? Number(rest[kindAt + 1]) : null };
-      rest = rest.slice(0, kindAt);
-    }
-    const name = rest.join('/');
-    if (name) return gitDetail(repo, name, sub);
-    const list = await rr.listGitRepos(repo.name);
-    const v = setView('Git repozitáře', `
-      <div class="card"><h2>${icon('terminal', 17)}Klonování a push</h2><pre>git clone ${esc(gitBase(repo))}/&lt;název&gt;.git
-git remote add rr ${esc(gitBase(repo))}/tym/projekt.git
-git push rr main      # ${repo.autoCreate === false ? 'automatické vytvoření je vypnuto' : 'repozitář se při prvním push vytvoří automaticky'}</pre></div>
-      <div id="t"></div>`, 'git');
-    table('#t', {
-      id: 'gitrepos', rows: list, rowKey: (g) => g.name, placeholder: 'Hledat git repozitář…', sort: { key: 'name', dir: 1 },
-      groups: [{ key: 'owner', label: 'vlastník', value: (g) => (g.name.includes('/') ? g.name.split('/')[0] : '(kořen)') }, { key: 'kind', label: 'druh', value: (g) => (g.mirror ? 'zrcadla' : 'vlastní') }],
-      toolbar: `${repos.length > 1 ? `<label class="dt-select">${icon('repo', 16)}<select id="gitRepo">${repos.map((r) => `<option value="${esc(r.name)}"${r.name === repo.name ? ' selected' : ''}>${esc(r.name)}</option>`).join('')}</select></label>` : ''}
-        <button type="button" class="btn small primary" id="new">${icon('plus', 15)}Nový</button><button type="button" class="btn small" id="imp">${icon('download', 15)}Import / zrcadlo</button><button type="button" class="btn small" id="gh">${icon('git', 15)}GitHub import</button>`,
-      empty: 'Zatím žádné git repozitáře – pošlete první push.',
-      columns: [
-        { key: 'name', label: 'Název', render: (g) => cellMain('git', g.name, g.description) },
-        { key: 'mirror', label: 'Pull zrcadlo', value: (g) => (g.mirror ? g.mirror.status : ''), render: (g) => (g.mirror ? `<span class="badge ${g.mirror.status === 'ok' ? 'ok' : g.mirror.status === 'error' ? 'off' : 'blue'}">${esc(g.mirror.status || '')}</span> <span class="small muted">${esc(g.mirror.url)}</span>` : '–') },
-        { key: 'sync', label: 'Synchronizace', toggle: true, value: (g) => (g.mirror ? g.mirror.lastSync : ''), render: (g) => (g.mirror ? when(g.mirror.lastSync) : '–') },
-        { key: 'pushMirrors', label: 'Push zrcadla', align: 'right', render: (g) => (g.pushMirrors ? `<span class="pill">${g.pushMirrors}</span>` : '–') },
-        { key: 'created', label: 'Vytvořeno', toggle: true, render: (g) => when(g.created) },
-      ],
-      onRow: (g) => { location.hash = gitHash(repo, g.name); },
-    });
-    return gitListActions(v, repo);
-  };
-
-  function gitListActions(v, repo) {
-    const sel = $('#gitRepo', v);
-    if (sel) sel.onchange = () => { location.hash = `#/git/${enc(sel.value)}`; };
-    $('#new', v).onclick = () => modal(`<h2>Nový git repozitář</h2><form class="form" id="f">
-        <label>Název <input name="name" required placeholder="tym/projekt"></label><label>Výchozí větev <input name="defaultBranch" value="main"></label>
-        <label style="grid-column:1/-1">Popis <input name="description"></label></form>
-        <div class="row"><span class="spacer"></span><button class="btn" data-close>Zrušit</button><button class="btn primary" id="ok">Vytvořit</button></div>`, (el, close) => {
-      $('#ok', el).onclick = async () => { const d = formData($('#f', el)); await run(() => rr.createGitRepo(repo.name, d), 'Vytvořeno'); close(); location.hash = gitHash(repo, d.name); };
-    });
-    $('#imp', v).onclick = () => modal(`<h2>Import / zrcadlo git repozitáře</h2><form class="form" id="f">
-        <label style="grid-column:1/-1">URL zdroje <input name="importUrl" id="iu" required placeholder="https://github.com/owner/repo.git"></label>
-        <label>Název v registru <input name="name" id="in" required></label>
-        <label>Token (privátní repozitáře) <input name="token" type="password"></label>
-        <label>Uživatel (výchozí x-access-token) <input name="username"></label>
-        <label>Interval synchronizace (s) <input name="interval" type="number" value="3600"></label>
-        <label class="check"><input type="checkbox" name="mirror" checked> udržovat jako zrcadlo (jen pro čtení)</label></form>
-        <div class="row"><span class="spacer"></span><button class="btn" data-close>Zrušit</button><button class="btn primary" id="ok">Importovat</button></div>`, (el, close) => {
-      $('#iu', el).oninput = (e) => { $('#in', el).value = e.target.value.replace(/^[a-z]+:\/\/[^/]+\//, '').replace(/\.git$/, ''); };
-      $('#ok', el).onclick = async () => {
-        const d = formData($('#f', el));
-        toast('Klonuji…');
-        const g = await run(() => rr.createGitRepo(repo.name, d), 'Importováno');
-        close(); location.hash = gitHash(repo, g.name);
-      };
-    });
-    $('#gh', v).onclick = () => modal(`<h2>Import z GitHubu</h2><form class="form" id="f">
-        <label>Uživatel nebo organizace <input name="owner" placeholder="prázdné = moje repozitáře (token)"></label>
-        <label>Druh <select name="kind"><option value="auto">automaticky</option><option value="org">organizace</option><option value="user">uživatel</option><option value="mine">moje (dle tokenu)</option></select></label>
-        <label>GitHub token <input name="token" type="password" placeholder="nutný pro privátní repozitáře"></label>
-        <label>Filtr názvů (glob) <input name="filter" placeholder="api-*"></label>
-        <label>Max. počet <input name="limit" type="number" value="50"></label>
-        <label>Prefix názvu (výchozí owner) <input name="prefix" placeholder="owner"></label>
-        <label>Interval synchronizace (s) <input name="interval" type="number" value="3600"></label>
-        <label class="check"><input type="checkbox" name="mirror" checked> jako zrcadla</label>
-        <label class="check"><input type="checkbox" name="includeForks"> včetně forků</label>
-        <label class="check"><input type="checkbox" name="includeArchived"> včetně archivovaných</label></form>
-        <div class="row"><span class="spacer"></span><button class="btn" data-close>Zrušit</button><button class="btn primary" id="ok">Importovat</button></div>`, (el, close) => {
-      $('#ok', el).onclick = async () => {
-        const d = formData($('#f', el));
-        if (!d.owner && d.kind === 'auto') d.kind = 'mine';
-        if (!d.prefix) delete d.prefix;
-        toast('Importuji z GitHubu…');
-        const r = await run(() => rr.githubImport(repo.name, d));
-        close();
-        modal(`<h2>Import dokončen</h2><p>Nalezeno ${r.found}, vybráno ${r.selected}.</p><div class="table-wrap"><table>${r.results.map((x) => `<tr><td><span class="badge ${x.status === 'created' ? 'ok' : x.status === 'error' ? 'off' : ''}">${esc(x.status)}</span></td><td>${esc(x.name)}</td><td class="small muted">${esc(x.error || '')}</td></tr>`).join('') || '<tr><td class="muted">nic</td></tr>'}</table></div>
-          <div class="row"><span class="spacer"></span><button class="btn primary" data-close>Hotovo</button></div>`);
-        route();
-      };
-    });
-    return v;
-  }
-
-  // ---------------------------------------------------------------- git
-  const gitBase = (repo) => `${serverBase()}${repo.gitDefault ? '/git' : `/r/${repo.name}`}`;
-  const gitHash = (repo, name, params) => `#/git/${enc(repo.name)}/${name.split('/').map(enc).join('/')}${params ? `?${new URLSearchParams(params)}` : ''}`;
-
-  const collabHash = (repo, name, kind, n, params) => `#/git/${enc(repo.name)}/${name.split('/').map(enc).join('/')}/${kind}${n ? `/${n}` : ''}${params ? `?${new URLSearchParams(params)}` : ''}`;
-  const canWrite = () => me && me.role !== 'reader' && !me.readonly;
-  const STATE_BADGE = (it) => (it.merged ? '<span class="badge blue">sloučeno</span>' : it.state === 'open' ? `<span class="badge ok">otevřeno</span>${it.draft ? ' <span class="badge plain">koncept</span>' : ''}` : '<span class="badge off">zavřeno</span>');
-  const labelBadges = (it) => (it.labels || []).map((l) => `<span class="badge plain">${esc(l.name)}</span>`).join(' ');
-  const MERGE_STATE = { clean: ['ok', 'Lze sloučit bez konfliktů'], dirty: ['off', 'Konflikty – nelze sloučit automaticky'], unknown: ['', 'Slučitelnost nelze určit'] };
-
-  async function gitDetail(repo, name, sub) {
-    const q = new URLSearchParams(location.hash.split('?')[1] || '');
-    const tab = (sub && sub.tab) || q.get('tab') || 'files';
-    const info = await rr.getGitRepo(repo.name, name);
-    const ref = q.get('ref') || info.defaultBranch || 'HEAD';
-    const path = q.get('path') || '';
-    const link = (params) => gitHash(repo, name, { tab: ['pulls', 'issues'].includes(tab) ? 'files' : tab, ref, path, ...params });
-    const tabs = [['files', 'Soubory'], ['commits', 'Commity'], ['branches', `Větve a tagy (${info.branches.length}/${info.tags.length})`], ['pulls', 'Pull requesty'], ['issues', 'Issues'], ['settings', 'Zrcadla a nastavení']];
-    let body = '';
-    let collab = null;
-    if (tab === 'pulls' || tab === 'issues') {
-      collab = await gitCollab(repo, name, info, tab, sub && sub.number, q);
-      body = collab.html;
-    } else if (info.empty && tab !== 'settings') {
-      body = `<div class="card"><p class="muted">Prázdný repozitář. Pošlete první commit:</p><pre>git remote add rr ${esc(info.cloneUrl)}\ngit push rr main</pre></div>`;
-    } else if (tab === 'files' || tab === 'file') {
-      const parts = path.split('/').filter(Boolean);
-      const crumbs = `<div class="crumbs"><a href="${link({ tab: 'files', path: '' })}">${icon('folder', 15)}${esc(name.split('/').pop())}</a>${parts.map((p, i) => ` / <a href="${link({ tab: 'files', path: parts.slice(0, i + 1).join('/') })}">${esc(p)}</a>`).join('')}</div>`;
-      if (tab === 'file') {
-        const bytes = await rr.gitBlob(repo.name, name, { ref, path });
-        const text = bytes.length < 512 * 1024 && !bytes.slice(0, 8000).includes(0) ? new TextDecoder().decode(bytes) : null;
-        body = `<div class="card">${crumbs}<div class="row" style="margin:8px 0"><span class="muted small">${fmtBytes(bytes.length)}</span><span class="spacer"></span><button class="btn small" id="dlf">${icon('download', 15)}Stáhnout</button></div>
-          <pre>${text === null ? '(binární soubor)' : esc(text)}</pre></div>`;
-      } else {
-        const t = await rr.gitTree(repo.name, name, { ref, path });
-        const readme = t.entries.find((e) => e.type === 'file' && /^readme(\.md|\.txt)?$/i.test(e.name));
-        let readmeText = '';
-        if (readme) readmeText = new TextDecoder().decode(await rr.gitBlob(repo.name, name, { ref, path: readme.path }));
-        body = `<div class="card">${crumbs}<div class="table-wrap"><table>
-          ${path ? `<tr class="click" data-up="1"><td>${icon('up', 14)} ..</td><td></td></tr>` : ''}
-          ${t.entries.map((e) => `<tr class="click" data-e="${esc(e.path)}" data-t="${e.type}"><td><span class="cell-main">${tile(e.type === 'dir' ? 'git' : 'x', e.type === 'dir' ? 'folder' : e.type === 'submodule' ? 'link' : 'file')}${esc(e.name)}</span></td><td>${e.type === 'file' ? fmtBytes(e.size) : ''}</td></tr>`).join('')}
-          </table></div></div>${readmeText ? `<div class="card"><h2>${esc(readme.name)}</h2><pre>${esc(readmeText)}</pre></div>` : ''}`;
-      }
-    } else if (tab === 'commits') {
-      const commits = await rr.gitCommits(repo.name, name, { ref, limit: 100 });
-      body = `<div class="card table-wrap"><table><tr><th>Commit</th><th>Zpráva</th><th>Autor</th><th>Datum</th></tr>
-        ${commits.map((c) => `<tr><td><a href="${link({ ref: c.commit, tab: 'files', path: '' })}"><code>${esc(c.short)}</code></a></td><td>${esc(c.subject)}</td><td>${esc(c.author)}</td><td>${fmtDate(c.date)}</td></tr>`).join('')}</table></div>`;
-    } else if (tab === 'branches') {
-      const row = (b, kind) => `<tr><td><a href="${link({ ref: b.name, tab: 'files', path: '' })}"><b>${esc(b.name)}</b></a> ${b.name === info.defaultBranch ? '<span class="badge blue">výchozí</span>' : ''}${info.protectedBranches.includes(b.name) ? ` <span class="badge warn">${icon('lock', 12)}chráněná</span>` : ''}</td>
-        <td><code>${esc(b.commit.slice(0, 8))}</code></td><td>${esc(b.subject)}</td><td>${fmtDate(b.date)}</td>
-        <td class="actions"><button class="btn small" data-arch="${esc(b.name)}">${icon('download', 14)}tar.gz</button> <button class="btn small" data-zip="${esc(b.name)}">${icon('download', 14)}zip</button>${kind === 'branch' && b.name !== info.defaultBranch ? ` <button class="btn small" data-def="${esc(b.name)}">Výchozí</button>` : ''}</td></tr>`;
-      body = `<div class="card table-wrap"><h2>Větve</h2><table>${info.branches.map((b) => row(b, 'branch')).join('')}</table></div>
-        <div class="card table-wrap"><h2>Tagy</h2><table>${info.tags.map((b) => row(b, 'tag')).join('') || '<tr><td class="muted">žádné tagy</td></tr>'}</table></div>`;
-    } else {
-      const m = info.mirror;
-      body = `<div class="card"><h2>Nastavení</h2><form class="form" id="fs">
-          <label style="grid-column:1/-1">Popis <input name="description" value="${esc(info.description)}"></label>
-          <label>Výchozí větev <select name="defaultBranch">${info.branches.map((b) => `<option${b.name === info.defaultBranch ? ' selected' : ''}>${esc(b.name)}</option>`).join('') || `<option>${esc(info.defaultBranch || 'main')}</option>`}</select></label>
-          <label>Chráněné větve (zákaz force-push a smazání) <input name="protectedBranches" value="${esc(info.protectedBranches.join(','))}" placeholder="main,release/*"></label></form>
-          <div class="row" style="margin-top:8px"><button class="btn primary" id="saveS">Uložit</button><span class="spacer"></span><button class="btn danger" id="delG">Smazat repozitář</button></div></div>
-        <div class="card"><h2>⇣ Pull zrcadlo (zdroj)</h2>
-          ${m ? `<p>Stav <span class="badge ${m.status === 'ok' ? 'ok' : m.status === 'error' ? 'off' : ''}">${esc(m.status)}</span> · poslední synchronizace ${fmtDate(m.lastSync) || '–'}${m.lastError ? ` · <span class="error">${esc(m.lastError)}</span>` : ''}</p>
-            <p class="small">Webhook pro okamžitou synchronizaci (GitHub → Settings → Webhooks, content type JSON): <code>${esc(m.webhookUrl)}</code>, secret <code>${esc(m.webhookSecret)}</code></p>` : '<p class="muted">Repozitář není zrcadlem. Nastavením URL se z něj stane zrcadlo jen pro čtení.</p>'}
-          <form class="form" id="fm">
-            <label style="grid-column:1/-1">URL zdroje <input name="url" value="${esc(m ? m.url : '')}" placeholder="https://github.com/owner/repo.git"></label>
-            <label>Token <input name="token" type="password" placeholder="${m && m.auth && m.auth.token ? '*** (beze změny)' : ''}"></label>
-            <label>Interval synchronizace (s, 0 = jen ručně) <input name="interval" type="number" value="${m ? m.interval : 3600}"></label>
-            <label>Obnovit při přístupu po (s) <input name="ttl" type="number" value="${m ? m.ttl : 300}"></label>
-            <label class="check"><input type="checkbox" name="enabled" ${!m || m.enabled ? 'checked' : ''}> zapnuto</label></form>
-          <div class="row" style="margin-top:8px"><button class="btn" id="saveM">Uložit zrcadlo</button>${m ? '<button class="btn" id="pull">⇣ Synchronizovat teď</button><button class="btn danger" id="offM">Zrušit zrcadlo</button>' : ''}</div></div>
-        <div class="card"><h2>⇡ Push zrcadla (cíle)</h2><p class="muted small">Po každém push do registru se repozitář odešle na tyto servery (GitHub, GitLab, Gitea…).</p>
-          <div class="table-wrap"><table><tr><th>URL</th><th>Režim</th><th>Stav</th><th>Poslední push</th><th></th></tr>
-          ${info.pushMirrors.map((p) => `<tr><td><code>${esc(p.url)}</code></td><td>${esc(p.mode)}${p.createMissing ? ' · vytváří' : ''}</td><td><span class="badge ${p.status === 'ok' ? 'ok' : p.status === 'error' ? 'off' : ''}">${esc(p.status)}</span> <span class="small error">${esc(p.lastError || '')}</span></td><td>${fmtDate(p.lastPush)}</td>
-            <td class="actions"><button class="btn small danger" data-rmpm="${esc(p.id)}">✕</button></td></tr>`).join('') || '<tr><td colspan="5" class="muted">žádná push zrcadla</td></tr>'}</table></div>
-          <form class="form" id="fp" style="margin-top:10px">
-            <label style="grid-column:1/-1">Cílová URL <input name="url" placeholder="https://github.com/firma/projekt.git"></label>
-            <label>Token <input name="token" type="password"></label><label>Uživatel (výchozí x-access-token) <input name="username"></label>
-            <label>Režim <select name="mode"><option value="mirror">mirror (vše včetně mazání)</option><option value="branches">jen větve a tagy</option></select></label>
-            <label class="check"><input type="checkbox" name="createMissing"> GitHub: vytvořit, pokud neexistuje</label>
-            <label class="check"><input type="checkbox" name="private" checked> jako privátní</label></form>
-          <div class="row" style="margin-top:8px"><button class="btn" id="addPm">+ Přidat push zrcadlo</button>${info.pushMirrors.length ? '<button class="btn" id="push">⇡ Odeslat teď</button>' : ''}</div></div>`;
-    }
-    const v = setView(name, `
-      <div class="row"><a href="#/git/${enc(repo.name)}">← git repozitáře</a></div>
-      <div class="card"><div class="row"><h2 style="margin:0">${esc(name)}</h2>${info.mirror ? '<span class="badge blue">zrcadlo</span>' : ''}<span class="spacer"></span>
-        <select id="ref">${[...info.branches.map((b) => b.name), ...info.tags.map((t) => t.name)].map((x) => `<option${x === ref ? ' selected' : ''}>${esc(x)}</option>`).join('')}${[...info.branches, ...info.tags].some((x) => x.name === ref) ? '' : `<option selected>${esc(ref)}</option>`}</select></div>
-        <p class="muted">${esc(info.description)}</p>
-        <div class="row"><code style="flex:1;min-width:0;overflow:auto">git clone ${esc(info.cloneUrl)}</code><button class="btn small" id="copy">Kopírovat</button>
-          <button class="btn small" id="tgz">${icon('download', 14)}tar.gz</button><button class="btn small" id="zip">${icon('download', 14)}zip</button><span class="muted small">${fmtBytes(info.size)}</span></div></div>
-      <div class="tabs">${tabs.map(([k, l]) => `<button data-tab="${k}" class="${(tab === k || (tab === 'file' && k === 'files')) ? 'active' : ''}">${l}</button>`).join('')}</div>
-      ${body}`, 'git');
-    const archive = async (r, format) => download(await run(() => rr.gitArchive(repo.name, name, { ref: r, format })), `${name.split('/').pop()}-${r}.${format}`);
-    $$('[data-tab]', v).forEach((b) => { b.onclick = () => { location.hash = ['pulls', 'issues'].includes(b.dataset.tab) ? collabHash(repo, name, b.dataset.tab) : link({ tab: b.dataset.tab }); }; });
-    if (collab) collab.mount(v);
-    $('#ref', v).onchange = (e) => { location.hash = link({ ref: e.target.value, path: tab === 'file' ? '' : path, tab: tab === 'file' ? 'files' : tab }); };
-    $('#copy', v).onclick = () => { navigator.clipboard && navigator.clipboard.writeText(`git clone ${info.cloneUrl}`); toast('Zkopírováno'); };
-    $('#tgz', v).onclick = () => archive(ref, 'tar.gz');
-    $('#zip', v).onclick = () => archive(ref, 'zip');
-    $$('tr[data-e]', v).forEach((tr) => { tr.onclick = () => { location.hash = link({ tab: tr.dataset.t === 'dir' ? 'files' : 'file', path: tr.dataset.e }); }; });
-    const up = $('tr[data-up]', v);
-    if (up) up.onclick = () => { location.hash = link({ tab: 'files', path: path.split('/').slice(0, -1).join('/') }); };
-    const dlf = $('#dlf', v);
-    if (dlf) dlf.onclick = async () => download(await run(() => rr.gitBlob(repo.name, name, { ref, path })), path.split('/').pop());
-    $$('[data-arch]', v).forEach((b) => { b.onclick = () => archive(b.dataset.arch, 'tar.gz'); });
-    $$('[data-zip]', v).forEach((b) => { b.onclick = () => archive(b.dataset.zip, 'zip'); });
-    $$('[data-def]', v).forEach((b) => { b.onclick = async () => { await run(() => rr.updateGitRepo(repo.name, name, { defaultBranch: b.dataset.def }), 'Výchozí větev změněna'); route(); }; });
-    const on = (id, fn) => { const el = $(id, v); if (el) el.onclick = fn; };
-    on('#saveS', async () => { await run(() => rr.updateGitRepo(repo.name, name, formData($('#fs', v))), 'Uloženo'); route(); });
-    on('#delG', async () => { if (await confirmBox(`Smazat git repozitář ${name}?`)) { await run(() => rr.deleteGitRepo(repo.name, name), 'Smazáno'); location.hash = `#/git/${enc(repo.name)}`; } });
-    on('#saveM', async () => {
-      const d = formData($('#fm', v));
-      if (!d.url) return toast('Zadejte URL zdroje', true);
-      if (!d.token) delete d.token;
-      await run(() => rr.updateGitRepo(repo.name, name, { mirror: d }), 'Zrcadlo uloženo');
-      route();
-    });
-    on('#offM', async () => { if (await confirmBox('Zrušit zrcadlení? Repozitář zůstane jako běžný.')) { await run(() => rr.updateGitRepo(repo.name, name, { mirror: null }), 'Zrcadlo zrušeno'); route(); } });
-    on('#pull', async () => { toast('Synchronizuji…'); const r = await run(() => rr.gitSync(repo.name, name, { direction: 'pull' })); toast(r.pull && r.pull.ok ? `Hotovo, změn: ${r.pull.changes.length}` : `Chyba: ${r.pull ? r.pull.error : ''}`, !(r.pull && r.pull.ok)); route(); });
-    on('#push', async () => { toast('Odesílám…'); const r = await run(() => rr.gitSync(repo.name, name, { direction: 'push' })); toast(r.push.every((x) => x.ok) ? 'Odesláno' : r.push.map((x) => x.error).filter(Boolean).join('; '), !r.push.every((x) => x.ok)); route(); });
-    on('#addPm', async () => {
-      const d = formData($('#fp', v));
-      if (!d.url) return toast('Zadejte cílovou URL', true);
-      await run(() => rr.addGitPushMirror(repo.name, name, d), 'Push zrcadlo přidáno');
-      route();
-    });
-    $$('[data-rmpm]', v).forEach((b) => { b.onclick = async () => { await run(() => rr.deleteGitPushMirror(repo.name, name, b.dataset.rmpm), 'Odebráno'); route(); }; });
-  }
-
-  // ---------------------------------------------------------------- git: pull requests & issues
-  /** Body of the "Pull requesty" / "Issues" tab: list (state filter), detail with comments, create forms. */
-  async function gitCollab(repo, name, info, kind, number, q) {
-    const isPull = kind === 'pulls';
-    const back = (params) => collabHash(repo, name, kind, null, params);
-    const comments = (list) => `<div class="card"><h2>${icon('menu', 17)}Komentáře (${list.length})</h2>
-      <ul class="feed">${list.map((c) => `<li>${tile('git', 'users')}<div class="tx"><b>${esc(c.user.login)}</b> <span class="when">${when(c.created_at)}</span><div style="white-space:pre-wrap">${esc(c.body)}</div></div></li>`).join('') || '<li class="muted">Zatím žádné komentáře.</li>'}</ul>
-      ${canWrite() ? `<form class="form" id="cf" style="margin-top:10px"><label style="grid-column:1/-1">Nový komentář <textarea name="body" required></textarea></label></form>
-      <div class="row" style="margin-top:8px"><button class="btn primary" id="addC">${icon('plus', 15)}Přidat komentář</button></div>` : ''}</div>`;
-    const mountComments = (v) => {
-      const b = $('#addC', v);
-      if (!b) return;
-      b.onclick = async () => {
-        const d = formData($('#cf', v));
-        if (!d.body.trim()) return toast('Napište text komentáře', true);
-        await run(() => rr.createGitIssueComment(repo.name, name, number, { body: d.body }), 'Komentář přidán');
-        route();
-      };
-    };
-    const editModal = (it, onSave) => modal(`<h2>Upravit #${it.number}</h2><form class="form" id="f">
-        <label style="grid-column:1/-1">Název <input name="title" required value="${esc(it.title)}"></label>
-        ${isPull ? '' : `<label style="grid-column:1/-1">Štítky (čárkou) <input name="labels" value="${esc((it.labels || []).map((l) => l.name).join(','))}"></label>`}
-        <label style="grid-column:1/-1">Popis <textarea name="body">${esc(it.body || '')}</textarea></label></form>
-      <div class="row"><span class="spacer"></span><button class="btn" data-close>Zrušit</button><button class="btn primary" id="ok">Uložit</button></div>`, (el, close) => {
-      $('#ok', el).onclick = async () => {
-        const d = formData($('#f', el));
-        if (!isPull) d.labels = d.labels.split(',').map((x) => x.trim()).filter(Boolean);
-        await run(() => onSave(d), 'Uloženo');
-        close(); route();
-      };
-    });
-
-    // ---- detail
-    if (number) {
-      const it = isPull ? await rr.getGitPull(repo.name, name, number) : await rr.getGitIssue(repo.name, name, number);
-      const list = await rr.listGitIssueComments(repo.name, name, number);
-      if (!isPull && it.pull_request) { location.hash = collabHash(repo, name, 'pulls', number); return { html: '', mount: () => {} }; }
-      const ms = MERGE_STATE[it.mergeable_state] || MERGE_STATE.unknown;
-      let merge = '';
-      if (isPull && it.merged) {
-        merge = `<p>${icon('check', 15)} Sloučeno ${when(it.merged_at)}${it.merged_by ? ` uživatelem <b>${esc(it.merged_by.login)}</b>` : ''} jako <a href="${gitHash(repo, name, { tab: 'files', ref: it.merge_commit_sha, path: '' })}"><code>${esc(String(it.merge_commit_sha).slice(0, 10))}</code></a></p>`;
-      } else if (isPull) {
-        merge = `<p><span class="badge ${ms[0]}">${esc(it.mergeable_state)}</span> ${esc(ms[1])}${it.conflicts && it.conflicts.length ? `: <code>${it.conflicts.map(esc).join(', ')}</code>` : ''}</p>
-          ${it.state === 'open' && canWrite() ? `<form class="form" id="mf"><label>Způsob sloučení <select name="merge_method"><option value="merge">merge commit</option><option value="squash">squash (jeden commit)</option><option value="rebase">rebase (přehrát commity)</option></select></label>
-            <label>Titulek commitu (nepovinné) <input name="commit_title" placeholder="${esc(it.title)}"></label></form>
-            <div class="row" style="margin-top:8px"><button class="btn primary" id="merge"${it.mergeable === false ? ' disabled' : ''}>${icon('git', 15)}Sloučit do ${esc(it.base.ref)}</button></div>` : ''}`;
-      }
-      const html = `<div class="row"><a href="${back()}">← ${isPull ? 'pull requesty' : 'issues'}</a></div>
-        <div class="card"><div class="row"><h2 style="margin:0">${esc(it.title)} <span class="muted">#${it.number}</span></h2>${STATE_BADGE(it)} ${labelBadges(it)}<span class="spacer"></span>
-          ${canWrite() ? `<button class="btn small" id="edit">${icon('edit', 15)}Upravit</button>${it.merged ? '' : `<button class="btn small${it.state === 'open' ? ' danger' : ''}" id="toggle">${it.state === 'open' ? 'Zavřít' : 'Znovu otevřít'}</button>`}` : ''}</div>
-          <p class="muted small"><b>${esc(it.user.login)}</b> otevřel(a) ${when(it.created_at)}${isPull ? ` · <code>${esc(it.head.ref)}</code> → <code>${esc(it.base.ref)}</code> · <code>${esc(it.head.sha.slice(0, 8))}</code>` : ''}${it.closed_at ? ` · zavřeno ${when(it.closed_at)}` : ''}</p>
-          <pre style="white-space:pre-wrap">${esc(it.body || '(bez popisu)')}</pre>
-          ${isPull ? `<div class="row"><a class="btn small" href="${gitHash(repo, name, { tab: 'commits', ref: it.head.sha })}">${icon('activity', 14)}Commity větve</a></div>` : ''}</div>
-        ${isPull ? `<div class="card"><h2>${icon('git', 17)}Sloučení</h2>${merge}</div>` : ''}
-        ${comments(list)}`;
-      return {
-        html,
-        mount: (v) => {
-          mountComments(v);
-          const on = (id, fn) => { const el = $(id, v); if (el) el.onclick = fn; };
-          on('#edit', () => editModal(it, (d) => (isPull ? rr.updateGitPull(repo.name, name, number, d) : rr.updateGitIssue(repo.name, name, number, d))));
-          on('#toggle', async () => {
-            const state = it.state === 'open' ? 'closed' : 'open';
-            await run(() => (isPull ? rr.updateGitPull(repo.name, name, number, { state }) : rr.updateGitIssue(repo.name, name, number, { state })), state === 'closed' ? 'Zavřeno' : 'Znovu otevřeno');
-            route();
-          });
-          on('#merge', async () => {
-            const d = formData($('#mf', v));
-            if (!d.commit_title) delete d.commit_title;
-            if (!(await confirmBox(`Sloučit #${it.number} (${d.merge_method}) do ${it.base.ref}?`))) return;
-            const r = await run(() => rr.mergeGitPull(repo.name, name, number, d));
-            toast(`${r.message} (${r.sha.slice(0, 10)})`);
-            route();
-          });
-        },
-      };
-    }
-
-    // ---- list
-    const state = ['open', 'closed', 'all'].includes(q.get('state')) ? q.get('state') : 'open';
-    const labels = q.get('labels') || '';
-    const rows = isPull ? await rr.listGitPulls(repo.name, name, { state }) : await rr.listGitIssues(repo.name, name, { state, labels });
-    const stateSel = `<label class="dt-select">${icon('filter', 16)}<span class="sr">Stav</span><select id="cState">${[['open', 'otevřené'], ['closed', 'zavřené'], ['all', 'všechny']].map(([k, l]) => `<option value="${k}"${k === state ? ' selected' : ''}>${l}</option>`).join('')}</select></label>`;
-    const html = `<div class="card">
-        <div class="row">${stateSel}${isPull ? '' : `<label class="dt-select">${icon('tag', 16)}<input id="cLabels" placeholder="štítky (a,b)" value="${esc(labels)}"></label>`}<span class="spacer"></span>
-          ${canWrite() ? `<button class="btn small primary" id="cNew">${icon('plus', 15)}${isPull ? 'Nový pull request' : 'Nové issue'}</button>` : ''}</div>
-        <div class="table-wrap"><table><tr><th>#</th><th>Název</th>${isPull ? '<th>Větve</th>' : '<th>Štítky</th>'}<th>Stav</th><th>Autor</th><th>Komentáře</th><th>Změněno</th></tr>
-        ${rows.map((it) => `<tr class="click" data-n="${it.number}"><td class="mono">#${it.number}</td><td><b>${esc(it.title)}</b></td>
-          <td>${isPull ? `<code>${esc(it.head.ref)}</code> → <code>${esc(it.base.ref)}</code>` : labelBadges(it)}</td><td>${STATE_BADGE(it)}</td><td>${esc(it.user.login)}</td><td>${it.comments}</td><td>${when(it.updated_at)}</td></tr>`).join('')
-          || `<tr><td colspan="7" class="muted">${isPull ? 'Žádné pull requesty.' : 'Žádné issues.'}</td></tr>`}</table></div></div>`;
-    return {
-      html,
-      mount: (v) => {
-        $$('tr[data-n]', v).forEach((tr) => { tr.onclick = () => { location.hash = collabHash(repo, name, kind, tr.dataset.n); }; });
-        $('#cState', v).onchange = (e) => { location.hash = back({ state: e.target.value, ...(labels ? { labels } : {}) }); };
-        const lab = $('#cLabels', v);
-        if (lab) lab.onchange = (e) => { location.hash = back({ state, ...(e.target.value.trim() ? { labels: e.target.value.trim() } : {}) }); };
-        const nb = $('#cNew', v);
-        if (!nb) return;
-        const branches = info.branches.map((b) => b.name);
-        const opts = (sel) => branches.map((b) => `<option${b === sel ? ' selected' : ''}>${esc(b)}</option>`).join('');
-        nb.onclick = () => {
-          if (isPull && branches.length < 2) return toast('Pull request potřebuje alespoň dvě větve – pošlete větev přes git push.', true);
-          modal(isPull ? `<h2>Nový pull request</h2><form class="form" id="f">
-              <label>Sloučit větev (head) <select name="head">${opts(branches.find((b) => b !== info.defaultBranch))}</select></label>
-              <label>do větve (base) <select name="base">${opts(info.defaultBranch)}</select></label>
-              <label style="grid-column:1/-1">Název <input name="title" required></label>
-              <label style="grid-column:1/-1">Popis <textarea name="body"></textarea></label>
-              <label class="check"><input type="checkbox" name="draft"> koncept (draft)</label></form>
-            <div class="row"><span class="spacer"></span><button class="btn" data-close>Zrušit</button><button class="btn primary" id="ok">Vytvořit</button></div>`
-            : `<h2>Nové issue</h2><form class="form" id="f">
-              <label style="grid-column:1/-1">Název <input name="title" required></label>
-              <label style="grid-column:1/-1">Štítky (čárkou) <input name="labels" placeholder="bug,ui"></label>
-              <label style="grid-column:1/-1">Popis <textarea name="body"></textarea></label></form>
-            <div class="row"><span class="spacer"></span><button class="btn" data-close>Zrušit</button><button class="btn primary" id="ok">Vytvořit</button></div>`, (el, close) => {
-            $('#ok', el).onclick = async () => {
-              const d = formData($('#f', el));
-              if (!d.title.trim()) return toast('Zadejte název', true);
-              if (!isPull) d.labels = d.labels.split(',').map((x) => x.trim()).filter(Boolean);
-              const it = await run(() => (isPull ? rr.createGitPull(repo.name, name, d) : rr.createGitIssue(repo.name, name, d)), 'Vytvořeno');
-              close();
-              location.hash = collabHash(repo, name, kind, it.number);
-            };
-          });
-        };
-      },
-    };
-  }
+  // ---------------------------------------------------------------- git (web/admin/git.js)
+  // GitHub-like views of git repositories and the account page with SSH keys; the module gets the helpers here.
+  Object.assign(views, window.RRGit({
+    rr: () => rr, me: () => me, CFG, LS: RRUI.LS, $, $$, esc, enc, icon, tile, cellMain, fmtBytes, fmtDate, when, toast, run, modal, confirmBox, formData, download, setView, table,
+    route: () => route(), query: () => routeQuery(), typeHost: () => TH,
+  }));
 
   // ---------------------------------------------------------------- webhooks & events
   views.webhooks = async () => {
@@ -1416,7 +1111,7 @@ git push rr main      # ${repo.autoCreate === false ? 'automatické vytvoření 
 
   // ---------------------------------------------------------------- logs
   views.logs = async () => {
-    const tab = new URLSearchParams(location.hash.split('?')[1] || '').get('tab') || 'requests';
+    const tab = routeQuery().get('tab') || 'requests';
     const l = await rr.getLogs({ limit: 1000 });
     const v = setView('Logy', `
       <div class="tabs"><button data-tab="requests" class="${tab === 'requests' ? 'active' : ''}">Požadavky</button><button data-tab="audit" class="${tab === 'audit' ? 'active' : ''}">Audit</button>
@@ -1454,7 +1149,7 @@ git push rr main      # ${repo.autoCreate === false ? 'automatické vytvoření 
     $$('[data-tab]', v).forEach((b) => { b.onclick = () => { location.hash = `#/logs?tab=${b.dataset.tab}`; }; });
     $('#logWin', v).onclick = liveLogWindow;
     const tick = async () => {
-      if (!location.hash.startsWith('#/logs')) { clearInterval(refreshTimer); refreshTimer = null; return; }
+      if (!currentRoute().startsWith('#/logs')) { clearInterval(refreshTimer); refreshTimer = null; return; }
       const n = await rr.getLogs({ limit: 1000 }).catch(() => null);
       if (n) t.setRows(tab === 'audit' ? n.audit : n.requests);
     };
@@ -1542,7 +1237,7 @@ git push rr main      # ${repo.autoCreate === false ? 'automatické vytvoření 
   const settingsTabs = (tab) => `<div class="tabs">${[['general', 'Obecné', 'gear'], ['export', 'Export', 'download'], ['import', 'Import', 'upload']].map(([k, l, ic]) => `<a href="#/settings?tab=${k}" class="tab-link${tab === k ? ' active' : ''}">${icon(ic, 15)}${l}</a>`).join('')}</div>`;
 
   views.settings = async () => {
-    const q = new URLSearchParams(location.hash.split('?')[1] || '');
+    const q = routeQuery();
     const tab = q.get('tab') || 'general';
     if (tab === 'export') return settingsExport();
     if (tab === 'import') return q.get('id') ? importPlan(q.get('id')) : settingsImport();
@@ -1815,14 +1510,20 @@ curl -fsSL ${esc(base)}/install.sh | bash -s -- rr_bash-cli    # jen bash CLI</p
   // ------------------------------------------------------------------ routing & shell
   const VIEW_NAV = { repo: 'repos', pkg: 'packages' };
   async function route() {
-    const [p] = location.hash.replace(/^#\/?/, '').split('?');
+    const [p] = currentRoute().replace(/^#\/?/, '').split('?');
     const [name, ...args] = p.split('/').filter(Boolean);
-    const view = views[name] ? name : 'dashboard';
+    const view = views[name] ? name : TH ? (TYPE_VIEW[TH.type] || 'search') : 'dashboard';
     $$('#nav a').forEach((a) => { const on = a.dataset.view === (VIEW_NAV[view] || view); a.classList.toggle('active', on); if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
     $('#sidebar').classList.remove('open');
+    // a dialog belongs to the page it was opened on
+    if (!$('#modal').classList.contains('hidden')) { $('#modal').classList.add('hidden'); if (modalKey) { document.removeEventListener('keydown', modalKey); modalKey = null; } }
     try {
-      await views[view](...args.map(decodeURIComponent));
+      await views[view](...(views[name] ? args : TH ? [TH.repo] : []).map((x) => { try { return decodeURIComponent(x); } catch { return x; } }));
     } catch (e) {
+      if (e.status === 401 && me && me.guest) {
+        setView('Přihlášení', `<div class="card"><h2>${icon('lock', 18)}Vyžaduje přihlášení</h2><p class="muted">${esc(e.message)}</p><button class="btn primary" data-login>Přihlásit</button></div>`, 'lock');
+        return undefined;
+      }
       if (e.status === 401) return logout();
       setView('Chyba', `<div class="card"><p class="error">${esc(e.message)}</p>${e.status === 403 ? '<p class="muted">Nemáte oprávnění pro tuto sekci.</p>' : ''}</div>`, 'alert');
     }
@@ -1839,7 +1540,8 @@ curl -fsSL ${esc(base)}/install.sh | bash -s -- rr_bash-cli    # jen bash CLI</p
     $('#app').classList.add('hidden');
     $('#login').classList.remove('hidden');
     $('#lServer').value = LS.get('server');
-    if (CFG.standalone) $('#lServer').closest('label').classList.add('hidden');
+    if (CFG.standalone || TH) $('#lServer').closest('label').classList.add('hidden');
+    if (TH) $('#portalLogin').setAttribute('href', `/_portal/auth/login?next=${encodeURIComponent(location.pathname + location.search)}`);
     $('#loginErr').textContent = err || '';
   }
 
@@ -1881,12 +1583,16 @@ curl -fsSL ${esc(base)}/install.sh | bash -s -- rr_bash-cli    # jen bash CLI</p
   }
 
   async function start() {
-    makeClient(LS.get('server'), LS.get('token'));
+    makeClient(TH ? '' : LS.get('server'), LS.get('token'));
     if (!rr.token) {
       // AI Tools Portal single sign-on: behind the portal gateway the logged-in portal user is
       // identified by the gateway (signed header) — no token and no login form needed.
       me = await rr.whoami().catch(() => null);
-      if (!me || me.via !== 'portal') return showLogin();
+      if (!me || me.via !== 'portal') {
+        // type host: public content is browsable without signing in (like github.com)
+        if (TH && (await rr.listRepos().then(() => true, () => false))) me = { name: 'host', role: 'guest', guest: true };
+        else return showLogin();
+      }
     } else {
       try {
         me = await rr.whoami();
@@ -1897,20 +1603,71 @@ curl -fsSL ${esc(base)}/install.sh | bash -s -- rr_bash-cli    # jen bash CLI</p
     }
     $('#login').classList.add('hidden');
     $('#app').classList.remove('hidden');
-    $('#who').textContent = me.name;
-    $('#whoRole').textContent = `${me.role}${me.readonly ? ' · jen čtení' : ''}${me.via === 'portal' ? ' · portál' : ''}`;
-    $('#avatar').textContent = me.name.slice(0, 2);
+    $('#who').textContent = me.guest ? 'Nepřihlášen' : me.name;
+    $('#whoRole').textContent = me.guest ? 'jen veřejný obsah' : `${me.role}${me.readonly ? ' · jen čtení' : ''}${me.via === 'portal' ? ' · portál' : ''}`;
+    $('#avatar').textContent = me.guest ? '?' : me.name.slice(0, 2);
+    $('#logout').innerHTML = me.guest ? `${icon('key', 15)}Přihlásit` : `${icon('logout', 15)}Odhlásit`;
+    if (TH) typeHostShell();
     const st = await rr.status().catch(() => null);
     if (st) { $('#serverInfo').textContent = `${st.title} ${st.version} · ${st.registry}`; document.title = `${st.title} – administrace`; }
     repoCache = await rr.listRepos().catch(() => []);
     const adminOnly = ['routes', 'cache', 'users', 'settings', 'logs', 'webhooks', 'jobs'];
-    adminOnly.forEach((v) => $(`#nav a[data-view="${v}"]`).classList.toggle('hidden', !isAdmin()));
-    $('#newBtn').classList.toggle('hidden', !isAdmin());
-    $('#liveLogBtn').classList.toggle('hidden', !isAdmin());
+    adminOnly.forEach((v) => { const a = $(`#nav a[data-view="${v}"]`); if (a) a.classList.toggle('hidden', !isAdmin()); });
+    $('#newBtn').classList.toggle('hidden', !isAdmin() || !!TH);
+    $('#liveLogBtn').classList.toggle('hidden', !isAdmin() || !!TH);
+    const prof = $('#nav a[data-view="profile"]');
+    if (prof) prof.classList.toggle('hidden', !!me.guest);
+    if (TH && location.hash.startsWith('#/')) history.replaceState(null, '', pathFromInternal(location.hash));
     route();
   }
 
+  /** Type host: navigation of that registry type only; the full administration lives on the main host. */
+  function typeHostShell() {
+    const label = { git: 'Git', npm: 'npm', docker: 'Docker', generic: 'Soubory' }[TH.type] || TH.type;
+    const repo = enc(TH.repo || '');
+    const links = {
+      git: [[`#/git/${repo}`, 'git', 'git', 'Repozitáře'], ...(me.guest ? [] : [[`#/git/${repo}/new`, 'git', 'plus', 'Nový repozitář']])],
+      npm: [[`#/packages/${repo}`, 'packages', 'package', 'Balíčky'], ['#/search', 'search', 'search', 'Hledání']],
+      docker: [[`#/images/${repo}`, 'images', 'image', 'Image']],
+    }[TH.type] || [];
+    $('#nav').innerHTML = `<div class="nav-group"><span>${esc(label)} registr</span>${links.map(([h, view, ic, t]) => `<a href="${h}" data-view="${view}">${icon(ic, 18)}${esc(t)}</a>`).join('')}
+        ${me.guest ? '' : `<a href="#/profile" data-view="profile">${icon('key', 18)}Můj účet a SSH klíče</a>`}</div>
+      <div class="nav-group"><span>Registr</span><a href="${esc(TH.mainUrl)}/admin/" data-external="1">${icon('popout', 18)}Plná administrace</a><a href="${esc(TH.mainUrl)}/" data-external="1">${icon('grid', 18)}Úvodní stránka</a></div>`;
+    $('#sidebar .brand > span').innerHTML = `${esc(TH.type)}<span class="dot">.</span>registry`;
+    $('#sidebar .brand').setAttribute('href', links[0] ? links[0][0] : '#/');
+    document.title = `${label} – ${location.host}`;
+  }
+
+  // type host: "#/..." links and location.hash changes become real paths (history API), Back/Forward work
+  if (TH) {
+    const toPath = (a) => {
+      const h = a.getAttribute('href');
+      if (h && h.startsWith('#/')) { a.setAttribute('href', pathFromInternal(h)); a.dataset.spa = '1'; }
+    };
+    new MutationObserver((muts) => {
+      for (const m of muts) for (const n of m.addedNodes) {
+        if (n.nodeType !== 1) continue;
+        if (n.matches && n.matches('a[href^="#/"]')) toPath(n);
+        n.querySelectorAll && n.querySelectorAll('a[href^="#/"]').forEach(toPath);
+      }
+    }).observe(document.body, { childList: true, subtree: true });
+    document.addEventListener('click', (e) => {
+      const a = e.target.closest && e.target.closest('a[data-spa]');
+      if (!a || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || a.target) return;
+      e.preventDefault();
+      history.pushState(null, '', a.getAttribute('href'));
+      window.scrollTo(0, 0);
+      route();
+    });
+    window.addEventListener('popstate', () => { if (rr && me) route(); });
+  }
+  // "Přihlásit" buttons of views shown to guests
+  document.addEventListener('click', (e) => {
+    if (e.target.closest && e.target.closest('[data-login]')) { e.preventDefault(); showLogin(); }
+  });
+
   function logout() {
+    if (me && me.guest) { me = null; showLogin(); return; }
     // portal SSO: log out of the portal (ends the session in every attached app)
     if (me && me.via === 'portal') { location.href = '/_portal/auth/logout'; return; }
     if (rr && rr.token) rr.logout().catch(() => {});
@@ -1932,7 +1689,7 @@ curl -fsSL ${esc(base)}/install.sh | bash -s -- rr_bash-cli    # jen bash CLI</p
   });
   $('#loginForm').onsubmit = async (e) => {
     e.preventDefault();
-    const server = $('#lServer').value.trim().replace(/\/+$/, '');
+    const server = TH ? '' : $('#lServer').value.trim().replace(/\/+$/, '');
     makeClient(server, '');
     try {
       if (loginMode === 'token') rr.setToken($('#lToken').value.trim());
@@ -1958,6 +1715,13 @@ curl -fsSL ${esc(base)}/install.sh | bash -s -- rr_bash-cli    # jen bash CLI</p
     else if (e.key === '/' && !typing && me && !$('.palette-wrap')) { e.preventDefault(); openPalette(); }
   });
   matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => { if (RRUI.LS.get('theme', 'dark') === 'auto') applyTheme('auto'); });
-  window.addEventListener('hashchange', () => { if (rr && rr.token && me) route(); });
+  window.addEventListener('hashchange', () => {
+    if (!rr || !me) return;
+    if (TH) {
+      if (!location.hash.startsWith('#/')) return; // in-page anchors (README headings, line numbers)
+      history.replaceState(null, '', pathFromInternal(location.hash));
+    }
+    route();
+  });
   start();
 })();

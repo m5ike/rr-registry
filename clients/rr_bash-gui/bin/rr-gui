@@ -226,8 +226,14 @@ screen_git() {
     case "$c" in
       back) return ;;
       +new)
-        local n d; n=$(input "Název (může obsahovat /, např. tym/projekt):") || continue; d=$(input "Popis:") || continue
-        api rr_api_create_git_repo "$repo" "$(rr_json_obj "name==$n" "description==$d")" >/dev/null && msg "Vytvořeno.\n\ngit clone ${RR_SERVER%/}/r/$repo/$n.git" 12 90 ;;
+        local n d vis readme=false gi lic out
+        n=$(input "Název (vlastník/projekt, např. tym/projekt):") || continue; d=$(input "Popis (nepovinné):") || continue
+        vis=$(radio "Viditelnost" public "veřejný – vidí každý s právem čtení" ON private "soukromý – vlastník, spolupracovníci, správci" OFF) || continue
+        yesno "Přidat soubor README?" && readme=true
+        gi=$(radio ".gitignore" "" "žádný" ON Node "" OFF Python "" OFF Go "" OFF Java "" OFF Rust "" OFF C "" OFF PHP "" OFF) || continue
+        lic=$(radio "Licence" "" "žádná" ON MIT "" OFF Apache-2.0 "" OFF GPL-3.0 "" OFF BSD-3-Clause "" OFF ISC "" OFF) || continue
+        out=$(api rr_api_create_git_repo "$repo" "$(rr_json_obj "name==$n" "description==$d" "visibility==$vis" "readme=$readme" "gitignore==$gi" "license==$lic")") || continue
+        msg "$(printf '%s' "$out" | jq -r '"Vytvořeno: \(.name) (\(.visibility))\n\nHTTPS: \(.cloneUrls.https)\nSSH:   \(.cloneUrls.ssh // "(vypnuto)")"')" 14 96 ;;
       +import)
         local n u t mi=true iv
         u=$(input "URL zdrojového repozitáře (https://github.com/owner/repo.git):") || continue
@@ -257,6 +263,8 @@ screen_git_repo() {
     info=$(api rr_api_get_git_repo "$repo" "$name") || return
     c=$(UI_TITLE="$name" menu "$(printf '%s' "$info" | jq -r '"\(.cloneUrl)\nVětev: \(.defaultBranch // "-")  větví: \(.branches|length)  tagů: \(.tags|length)\(if .mirror then "\nZrcadlo: \(.mirror.url) [\(.mirror.status)]" else "" end)"')" \
       info "Větve, tagy, zrcadla" log "Historie commitů" browse "Procházet soubory" \
+      newbr "Nová větev" delbr "Smazat větev" newtag "Nový tag" deltag "Smazat tag" releases "Releases" \
+      visibility "Viditelnost (veřejný / soukromý)" rename "Přejmenovat / přesunout" \
       sync "Synchronizovat zrcadla" mirror "Nastavit / zrušit pull zrcadlo" pushmirror "Přidat push zrcadlo" \
       rmpush "Odebrat push zrcadlo" protect "Chráněné větve" branch "Výchozí větev" desc "Popis" \
       archive "Stáhnout archiv" delete "Smazat repozitář" back "Zpět") || return
@@ -266,6 +274,51 @@ screen_git_repo() {
          (if (.pushMirrors|length) > 0 then "\nPush zrcadla:", (.pushMirrors[] | "  \(.id) \(.url) [\(.status)] \(.lastPush // "")  \(.lastError // "")") else empty end),
          "\nVětve:", (.branches[] | "  \(.name)  \(.commit[0:8])  \(.date)  \(.subject)"), "\nTagy:", (.tags[] | "  \(.name)  \(.commit[0:8])")')" ;;
       log) text "$(api rr_api_git_commits "$repo" "$name" "limit=100" | jq -r '.[] | "\(.short)  \(.date[0:16])  \(.author)\n         \(.subject)"')" ;;
+      newbr)
+        local b f; b=$(input "Název nové větve:") || continue
+        f=$(input "Ze zdroje (větev / tag / commit):" "$(printf '%s' "$info" | jq -r '.defaultBranch // "main"')") || continue
+        api rr_api_create_git_branch "$repo" "$name" "$(rr_json_obj "name==$b" "from==$f")" >/dev/null && msg "Větev $b vytvořena." ;;
+      delbr)
+        read_items < <(printf '%s' "$info" | jq -r --arg d "$(printf '%s' "$info" | jq -r '.defaultBranch')" '.branches[] | select(.name != $d) | .name, .subject')
+        [ ${#ITEMS[@]} -gt 0 ] || { msg "Žádná větev kromě výchozí."; continue; }
+        local b; b=$(menu "Smazat větev" "${ITEMS[@]}") && yesno "Smazat větev $b?" && api rr_api_delete_git_branch "$repo" "$name" "$b" >/dev/null && msg "Smazáno." ;;
+      newtag)
+        local t r m; t=$(input "Název tagu (např. v1.0.0):") || continue
+        r=$(input "Commit / větev:" "$(printf '%s' "$info" | jq -r '.defaultBranch // "main"')") || continue
+        m=$(input "Zpráva (prázdné = lehký tag):") || continue
+        api rr_api_create_git_tag "$repo" "$name" "$(rr_json_obj "tag==$t" "ref==$r" "message==$m")" >/dev/null && msg "Tag $t vytvořen." ;;
+      deltag)
+        read_items < <(printf '%s' "$info" | jq -r '.tags[] | .name, .commit[0:8]')
+        [ ${#ITEMS[@]} -gt 0 ] || { msg "Žádné tagy."; continue; }
+        local t; t=$(menu "Smazat tag" "${ITEMS[@]}") && yesno "Smazat tag $t?" && api rr_api_delete_git_tag "$repo" "$name" "$t" >/dev/null ;;
+      releases)
+        local rl; rl=$(api rr_api_list_git_releases "$repo" "$name") || continue
+        read_items < <(printf '%s' "$rl" | jq -r '.[] | (.id|tostring), "\(.tag_name)  \(.name)\(if .draft then " (koncept)" else "" end)"')
+        local rc; rc=$(menu "Releases" "+new" "Nový release" "${ITEMS[@]}" back "Zpět") || continue
+        case "$rc" in
+          back) ;;
+          +new)
+            local t nm notes=false; t=$(input "Tag (existující nebo nový, např. v1.0.0):") || continue
+            nm=$(input "Název release:" "$t") || continue
+            yesno "Vygenerovat poznámky z commitů od předchozího tagu?" && notes=true
+            text "$(api rr_api_create_git_release "$repo" "$name" "$(rr_json_obj "tag_name==$t" "name==$nm" "generate_release_notes=$notes")" | jq -r '"\(.tag_name) – \(.name)\n\n\(.body)"')" ;;
+          *)
+            local act; act=$(menu "Release $rc" show "Zobrazit" upload "Nahrát soubor" delete "Smazat release") || continue
+            case "$act" in
+              show) text "$(printf '%s' "$rl" | jq -r --argjson id "$rc" '.[] | select(.id == $id) | "\(.tag_name) – \(.name)\n\n\(.body)\n\nSoubory:", (.assets[] | "  \(.id) \(.name) (\(.size) B, staženo \(.download_count)×)")')" ;;
+              upload) local f; f=$(input "Soubor k nahrání:" "$PWD/") || continue; [ -f "$f" ] || { msg "Soubor neexistuje."; continue; }
+                api rr_api_upload_git_release_asset "$repo" "$name" "$rc" "$f" "$(rr_query "name=$(basename "$f")")" >/dev/null && msg "Nahráno." ;;
+              delete) yesno "Smazat release (tag zůstane)?" && api rr_api_delete_git_release "$repo" "$name" "$rc" >/dev/null ;;
+            esac ;;
+        esac ;;
+      visibility)
+        local v; v=$(radio "Viditelnost $name" public "veřejný" "$(printf '%s' "$info" | jq -r 'if .private then "OFF" else "ON" end')" private "soukromý" "$(printf '%s' "$info" | jq -r 'if .private then "ON" else "OFF" end')") || continue
+        api rr_api_set_git_access "$repo" "$name" "$(rr_json_obj "visibility==$v")" >/dev/null && msg "Viditelnost: $v" ;;
+      rename)
+        local nn tr out; nn=$(input "Nový název (vlastník/projekt):" "$name") || continue
+        tr=$(input "Cílový repozitář typu git:" "$repo") || continue
+        out=$(api rr_api_move_git_repo "$repo" "$name" "$(rr_json_obj "name==$nn" "repo==$tr")") || continue
+        msg "Přesunuto: $tr/$nn\n\nStaré adresy dál fungují (přesměrování)."; return ;;
       browse) screen_git_tree "$repo" "$name" "" "" ;;
       sync) local d; d=$(radio "Směr" both "pull i push" ON pull "stáhnout ze zdroje" OFF push "odeslat do push zrcadel" OFF) && text "$(api rr_api_git_sync "$repo" "$name" "$(rr_json_obj "direction=$d")" | jq .)" ;;
       mirror)
@@ -296,6 +349,24 @@ screen_git_repo() {
         RR_OUT="$o" rr_api_git_archive "$repo" "$name" "$(rr_query "ref=$ref")" 2>"$TMP/err" && msg "Uloženo: $o" || msg "Chyba: $(cat "$TMP/err")" ;;
       delete) yesno "Smazat git repozitář $name?" && api rr_api_delete_git_repo "$repo" "$name" >/dev/null && return ;;
       *) return ;;
+    esac
+  done
+}
+
+screen_ssh_keys() {
+  while true; do
+    local keys c
+    keys=$(api rr_api_list_ssh_keys) || return
+    read_items < <(printf '%s' "$keys" | jq -r '.[] | .id, "\(.title)  \(.type)  \(.fingerprint)"')
+    c=$(menu "SSH klíče (git clone ssh://git@<server>:<port>/<název>.git)" "+add" "Přidat klíč" "${ITEMS[@]}" back "Zpět") || return
+    case "$c" in
+      back) return ;;
+      +add)
+        local f k t; f=$(input "Soubor s veřejným klíčem nebo klíč samotný:" "$HOME/.ssh/id_ed25519.pub") || continue
+        if [ -f "$f" ]; then k=$(cat "$f"); else k="$f"; fi
+        t=$(input "Název klíče:" "$(hostname 2>/dev/null)") || continue
+        api rr_api_add_ssh_key "$(rr_json_obj "key==$k" "title==$t")" >/dev/null && msg "Klíč přidán." ;;
+      *) yesno "Odebrat klíč $c?" && api rr_api_delete_ssh_key "$c" >/dev/null ;;
     esac
   done
 }
@@ -752,6 +823,7 @@ main_menu() {
       8 "Uživatelé" \
       9 "Tokeny" \
       G "Git repozitáře" \
+      H "SSH klíče (git přes SSH)" \
       D "Docker image" \
       W "Webhooky a události" \
       J "Replikace a naplánované úlohy" \
@@ -773,6 +845,7 @@ main_menu() {
       8) screen_users ;;
       9) screen_tokens ;;
       G) local r; r=$(pick_git_repo) && screen_git "$r" ;;
+      H) screen_ssh_keys ;;
       D) screen_images ;;
       W) screen_webhooks ;;
       J) screen_jobs ;;

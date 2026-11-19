@@ -99,6 +99,34 @@
       "summary": "Informace o přihlášeném uživateli"
     },
     {
+      "id": "listSshKeys",
+      "group": "auth",
+      "method": "GET",
+      "path": "/user/keys",
+      "auth": "user",
+      "summary": "SSH klíče přihlášeného uživatele (admin: ?user=jméno nebo ?user=* pro všechny)",
+      "query": [
+        "user"
+      ]
+    },
+    {
+      "id": "addSshKey",
+      "group": "auth",
+      "method": "POST",
+      "path": "/user/keys",
+      "auth": "user",
+      "summary": "Přidat SSH klíč {title, key} (ssh-ed25519, ecdsa-sha2-*, ssh-rsa)",
+      "body": "json"
+    },
+    {
+      "id": "deleteSshKey",
+      "group": "auth",
+      "method": "DELETE",
+      "path": "/user/keys/:id",
+      "auth": "user",
+      "summary": "Odebrat SSH klíč"
+    },
+    {
       "id": "listRepos",
       "group": "repos",
       "method": "GET",
@@ -377,7 +405,7 @@
       "method": "POST",
       "path": "/repos/:repo/git",
       "auth": "publish",
-      "summary": "Vytvořit git repozitář {name, description, defaultBranch} nebo importovat/zrcadlit (jen admin) {importUrl, mirror, interval, ttl, token, username}",
+      "summary": "Vytvořit git repozitář {name, description, defaultBranch, visibility: public|private, readme, gitignore, license} nebo importovat/zrcadlit (jen admin) {importUrl, mirror, interval, ttl, token, username}",
       "body": "json"
     },
     {
@@ -402,8 +430,8 @@
       "group": "git",
       "method": "PUT",
       "path": "/repos/:repo/git/:name",
-      "auth": "admin",
-      "summary": "Upravit git repozitář {description, defaultBranch, protectedBranches, mirror: {url, token, interval, ttl, enabled} | null}",
+      "auth": "publish",
+      "summary": "Upravit git repozitář {description, defaultBranch, protectedBranches, mirror: {url, token, interval, ttl, enabled} | null} – správce repozitáře (vlastník); zrcadlení jen admin",
       "body": "json"
     },
     {
@@ -411,8 +439,8 @@
       "group": "git",
       "method": "DELETE",
       "path": "/repos/:repo/git/:name",
-      "auth": "admin",
-      "summary": "Smazat git repozitář"
+      "auth": "publish",
+      "summary": "Smazat git repozitář (správce repozitáře – vlastník nebo admin)"
     },
     {
       "id": "gitCommits",
@@ -497,7 +525,10 @@
       "method": "GET",
       "path": "/repos/:repo/git/:name/branches",
       "auth": "read",
-      "summary": "Větve ve tvaru GitHubu [{name, commit: {sha}, protected}]"
+      "summary": "Větve ve tvaru GitHubu [{name, commit: {sha}, protected}]; ?detailed=1 – s posledním commitem, výchozí, ahead/behind",
+      "query": [
+        "detailed"
+      ]
     },
     {
       "id": "listGitPulls",
@@ -617,6 +648,208 @@
       "path": "/repos/:repo/git/:name/issues/:number/comments",
       "auth": "publish",
       "summary": "Přidat komentář k issue nebo pull requestu {body}",
+      "body": "json"
+    },
+    {
+      "id": "gitTemplates",
+      "group": "git",
+      "method": "GET",
+      "path": "/git/templates",
+      "auth": "none",
+      "summary": "Šablony pro nový git repozitář: názvy .gitignore a licencí, nebo obsah jedné (?gitignore=Node | ?license=MIT&holder=jméno)",
+      "query": [
+        "gitignore",
+        "license",
+        "holder"
+      ]
+    },
+    {
+      "id": "moveGitRepo",
+      "group": "git",
+      "method": "POST",
+      "path": "/repos/:repo/git/:name/move",
+      "auth": "publish",
+      "summary": "Přejmenovat nebo přesunout git repozitář {name, repo} – staré URL dál fungují (přesměrování)",
+      "body": "json"
+    },
+    {
+      "id": "setGitAccess",
+      "group": "git",
+      "method": "PUT",
+      "path": "/repos/:repo/git/:name/access",
+      "auth": "publish",
+      "summary": "Viditelnost a oprávnění {visibility: public|private, owner, collaborators: {user: read|write|admin}}",
+      "body": "json"
+    },
+    {
+      "id": "gitCommit",
+      "group": "git",
+      "method": "GET",
+      "path": "/repos/:repo/git/:name/commits/:sha",
+      "auth": "read",
+      "summary": "Detail commitu se změněnými soubory a patchem"
+    },
+    {
+      "id": "createGitBranch",
+      "group": "git",
+      "method": "POST",
+      "path": "/repos/:repo/git/:name/branches",
+      "auth": "publish",
+      "summary": "Vytvořit větev {name, from}",
+      "body": "json"
+    },
+    {
+      "id": "updateGitBranch",
+      "group": "git",
+      "method": "PATCH",
+      "path": "/repos/:repo/git/:name/branches/:branch",
+      "auth": "publish",
+      "summary": "Přejmenovat větev / nastavit jako výchozí / chránit {name, default, protected}",
+      "body": "json"
+    },
+    {
+      "id": "deleteGitBranch",
+      "group": "git",
+      "method": "DELETE",
+      "path": "/repos/:repo/git/:name/branches/:branch",
+      "auth": "publish",
+      "summary": "Smazat větev (ne výchozí ani chráněnou)"
+    },
+    {
+      "id": "listGitTags",
+      "group": "git",
+      "method": "GET",
+      "path": "/repos/:repo/git/:name/tags",
+      "auth": "read",
+      "summary": "Tagy (anotované i lehké) [{name, commit, annotated, tagger, date, message}]"
+    },
+    {
+      "id": "createGitTag",
+      "group": "git",
+      "method": "POST",
+      "path": "/repos/:repo/git/:name/tags",
+      "auth": "publish",
+      "summary": "Vytvořit tag {tag, ref, message} – se zprávou anotovaný",
+      "body": "json"
+    },
+    {
+      "id": "deleteGitTag",
+      "group": "git",
+      "method": "DELETE",
+      "path": "/repos/:repo/git/:name/tags/:tag",
+      "auth": "publish",
+      "summary": "Smazat tag"
+    },
+    {
+      "id": "listGitReleases",
+      "group": "git",
+      "method": "GET",
+      "path": "/repos/:repo/git/:name/releases",
+      "auth": "read",
+      "summary": "Releases (nejnovější první, koncepty jen pro zapisující)"
+    },
+    {
+      "id": "createGitRelease",
+      "group": "git",
+      "method": "POST",
+      "path": "/repos/:repo/git/:name/releases",
+      "auth": "publish",
+      "summary": "Vytvořit release {tag_name, target_commitish, name, body, draft, prerelease, generate_release_notes}",
+      "body": "json"
+    },
+    {
+      "id": "getGitRelease",
+      "group": "git",
+      "method": "GET",
+      "path": "/repos/:repo/git/:name/releases/:id",
+      "auth": "read",
+      "summary": "Detail release (id nebo „latest“)"
+    },
+    {
+      "id": "getGitReleaseByTag",
+      "group": "git",
+      "method": "GET",
+      "path": "/repos/:repo/git/:name/releases/tags/:tag",
+      "auth": "read",
+      "summary": "Release podle tagu"
+    },
+    {
+      "id": "updateGitRelease",
+      "group": "git",
+      "method": "PATCH",
+      "path": "/repos/:repo/git/:name/releases/:id",
+      "auth": "publish",
+      "summary": "Upravit release {tag_name, target_commitish, name, body, draft, prerelease}",
+      "body": "json"
+    },
+    {
+      "id": "deleteGitRelease",
+      "group": "git",
+      "method": "DELETE",
+      "path": "/repos/:repo/git/:name/releases/:id",
+      "auth": "publish",
+      "summary": "Smazat release (tag zůstane)"
+    },
+    {
+      "id": "uploadGitReleaseAsset",
+      "group": "git",
+      "method": "POST",
+      "path": "/repos/:repo/git/:name/releases/:id/assets",
+      "auth": "publish",
+      "summary": "Nahrát soubor k release (?name=soubor&label=popis)",
+      "body": "binary",
+      "query": [
+        "name",
+        "label"
+      ]
+    },
+    {
+      "id": "downloadGitReleaseAsset",
+      "group": "git",
+      "method": "GET",
+      "path": "/repos/:repo/git/:name/releases/assets/:asset/download",
+      "auth": "read",
+      "summary": "Stáhnout soubor release",
+      "response": "binary"
+    },
+    {
+      "id": "deleteGitReleaseAsset",
+      "group": "git",
+      "method": "DELETE",
+      "path": "/repos/:repo/git/:name/releases/assets/:asset",
+      "auth": "publish",
+      "summary": "Smazat soubor release"
+    },
+    {
+      "id": "putGitFile",
+      "group": "git",
+      "method": "PUT",
+      "path": "/repos/:repo/git/:name/contents",
+      "auth": "publish",
+      "summary": "Vytvořit / upravit soubor commitem {path, content, encoding: utf8|base64, message, branch, sha, create}",
+      "body": "json"
+    },
+    {
+      "id": "deleteGitFile",
+      "group": "git",
+      "method": "DELETE",
+      "path": "/repos/:repo/git/:name/contents",
+      "auth": "publish",
+      "summary": "Smazat soubor nebo adresář commitem (?path, branch, message, sha)",
+      "query": [
+        "path",
+        "branch",
+        "message",
+        "sha"
+      ]
+    },
+    {
+      "id": "commitGitFiles",
+      "group": "git",
+      "method": "POST",
+      "path": "/repos/:repo/git/:name/commit-files",
+      "auth": "publish",
+      "summary": "Commit více souborů najednou (nahrávání) {branch, from, message, files: [{path, content, encoding}], deletes: [path]}",
       "body": "json"
     },
     {

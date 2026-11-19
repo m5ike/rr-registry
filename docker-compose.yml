@@ -12,6 +12,8 @@ services:
     user: "${RR_UID:-1000}:${RR_GID:-1000}"
     ports:
       - "${RR_BIND:-0.0.0.0}:${RR_PORT:-4873}:${RR_PORT:-4873}"
+      # git over SSH (RR_SSH_PORT=0 disables it - then remove this line)
+      - "${RR_BIND:-0.0.0.0}:${RR_SSH_PORT:-2222}:${RR_SSH_PORT:-2222}"
     volumes:
       - ${RR_DATA_PATH:-./data}:/data
     healthcheck:

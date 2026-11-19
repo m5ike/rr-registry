@@ -74,7 +74,7 @@ let bundle;
 
 test('export: sections in order, encrypted file, list and download', async () => {
   const sec = await S('GET', '/transfer/sections');
-  assert.deepStrictEqual(sec.json.sections.map((s) => s.id), ['server', 'secret', 'plugins', 'users', 'tokens', 'repos', 'content', 'routes', 'webhooks', 'settings', 'stats', 'audit', 'cache']);
+  assert.deepStrictEqual(sec.json.sections.map((s) => s.id), ['server', 'secret', 'plugins', 'users', 'tokens', 'sshkeys', 'repos', 'content', 'routes', 'webhooks', 'settings', 'stats', 'audit', 'cache']);
   assert.ok(sec.json.sections.find((s) => s.id === 'content').items.some((i) => i.id === 'internal' && i.files > 0));
 
   let r = await S('POST', '/exports', { passphrase: 'short' });

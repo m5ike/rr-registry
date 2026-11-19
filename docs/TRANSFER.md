@@ -15,14 +15,15 @@ Sekce se exportují i importují vždy v tomto pořadí, každá smí záviset j
 | 3 | `plugins` | vlastní pluginy `data/plugins/*.js` | |
 | 4 | `users` | uživatelé, role, hashe hesel | ano |
 | 5 | `tokens` | API/npm tokeny (hashe) – závisí na uživatelích | ano |
-| 6 | `repos` | konfigurace repozitářů (typ, ACL, kvóty, retence); skupiny až po svých členech | |
-| 7 | `content` | obsah repozitářů – npm balíčky, Docker vrstvy, git repozitáře (vč. hooků, pull requestů a issues), soubory | |
-| 8 | `routes` | směrovací pravidla vč. tokenů pro cílové servery | ano |
-| 9 | `webhooks` | webhooky vč. tajných klíčů | ano |
-| 10 | `settings` | nastavení serveru – odkazuje na repozitáře a pluginy | |
-| 11 | `stats` | statistiky stahování | |
-| 12 | `audit` | audit log | |
-| 13 | `cache` | cache vzdálených registrů (ve výchozím stavu se neexportuje, lze ji obnovit stažením) | |
+| 6 | `sshkeys` | veřejné SSH klíče uživatelů (git přes SSH) – závisí na uživatelích | |
+| 7 | `repos` | konfigurace repozitářů (typ, ACL, kvóty, retence); skupiny až po svých členech | |
+| 8 | `content` | obsah repozitářů – npm balíčky, Docker vrstvy, git repozitáře (vč. hooků, pull requestů a issues), soubory | |
+| 9 | `routes` | směrovací pravidla vč. tokenů pro cílové servery | ano |
+| 10 | `webhooks` | webhooky vč. tajných klíčů | ano |
+| 11 | `settings` | nastavení serveru – odkazuje na repozitáře a pluginy | |
+| 12 | `stats` | statistiky stahování | |
+| 13 | `audit` | audit log | |
+| 14 | `cache` | cache vzdálených registrů (ve výchozím stavu se neexportuje, lze ji obnovit stažením) | |
 
 Exportovat lze celé sekce nebo jen vybrané položky (konkrétní repozitáře, uživatele, pravidla…).
 Konfigurace portálu (`PORTAL_*`) se neexportuje – patří k nasazení, ne k datům registru.

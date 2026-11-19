@@ -48,6 +48,7 @@ npm install lodash          # není lokálně → stáhne se z npmjs.org přes c
 
 git push http://localhost:4873/git/tym/projekt.git main    # repozitář se vytvoří automaticky
 git clone http://localhost:4873/git/tym/projekt.git
+git clone ssh://git@localhost:2222/tym/projekt.git          # git přes SSH (RR_SSH_PORT, klíč v „Můj účet“)
 ```
 
 Klientské nástroje z běžícího serveru:
@@ -70,7 +71,11 @@ rr-web serve --open                                       # Web GUI lokálně
   chráněné větve (zákaz force-push a mazání), procházení souborů, commitů, větví a tagů, archivy tar.gz/zip,
   **pull zrcadla** (GitHub, GitLab, …: plánovaná synchronizace, obnova při přístupu, webhook z GitHubu),
   **push zrcadla** (po každém push odeslat na GitHub, volitelně repozitář na GitHubu vytvořit), **hromadný import z GitHubu**
-  a **pull requesty a issues** s API kompatibilním s GitHubem (slučování merge / squash / rebase přímo na serveru, komentáře, štítky).
+  a **pull requesty a issues** s API kompatibilním s GitHubem (slučování merge / squash / rebase přímo na serveru, komentáře, štítky),
+  **git přes SSH** (vestavěný SSH server, klíče ed25519 / ECDSA / RSA), **soukromé repozitáře** s vlastníkem a spolupracovníky,
+  **větve, tagy a releases** se soubory ke stažení, **přejmenování a přesun** repozitářů (staré URL dál fungují),
+  úpravy a nahrávání souborů z prohlížeče a webové rozhraní ve stylu GitHubu (README s odkazy, diffy, rychlé nastavení)
+  – na hostu `git-registry.<doména>` bez `/git` v adresách. Podrobnosti v [docs/GIT.md](docs/GIT.md).
   Viz [docs/GIT.md](docs/GIT.md).
 * **Více repozitářů** – typ `npm`, `docker`, `git`, `generic` (libovolné soubory: PUT/GET/DELETE) nebo `group`
   (virtuální skupina npm/generic repozitářů), výchozí repozitář na `/`, ostatní na `/r/<repo>/`, veřejné/soukromé, zákaz publikace.

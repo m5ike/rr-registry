@@ -24,6 +24,7 @@ const { mkdirp, writeAtomic, readJsonFile, rmrf, dirSize } = require('../util/st
 const gitu = require('../util/git');
 const { checkQuota, invalidate } = require('../policies');
 const { pullsMixin } = require('./git-pulls');
+const { manageMixin } = require('./git-manage');
 
 const SEG = '[A-Za-z0-9_][A-Za-z0-9_.-]*';
 const NAME_RE = new RegExp(`^${SEG}(?:/${SEG}){0,3}$`);
@@ -131,9 +132,28 @@ class GitRepo {
     return { name, sub };
   }
 
-  cloneUrl(base, name) {
+  /** Path of the repository on the main host (/git/<name>.git) or, with `direct`, on the git type host (/<name>.git). */
+  repoUrlPath(name, { direct = false } = {}) {
     const gitRepo = this.app.stores.settings.get().gitRepo;
-    return this.conf.name === gitRepo ? `${base}/git/${name}.git` : `${base}/r/${this.conf.name}/${name}.git`;
+    if (this.conf.name !== gitRepo) return `/r/${this.conf.name}/${name}.git`;
+    return direct ? `/${name}.git` : `/git/${name}.git`;
+  }
+
+  cloneUrl(base, name, opts = {}) {
+    return `${base}${this.repoUrlPath(name, opts)}`;
+  }
+
+  /** ssh://git@host:port/<name>.git (or git@host:<name>.git on port 22); null when the SSH server is off. */
+  sshUrl(base, name) {
+    const ssh = this.app.ssh;
+    if (!ssh || !ssh.port) return null;
+    let host = 'localhost';
+    try { host = new URL(base).hostname; } catch { /* keep localhost */ }
+    if (this.app.config.sshPublicHost) host = this.app.config.sshPublicHost;
+    const gitRepo = this.app.stores.settings.get().gitRepo;
+    const p = this.conf.name === gitRepo ? `${name}.git` : `r/${this.conf.name}/${name}.git`;
+    const port = ssh.publicPort || ssh.port;
+    return Number(port) === 22 ? `git@${host}:${p}` : `ssh://git@${host}:${port}/${p}`;
   }
 
   // ---------- configuration of a bare repository ----------
@@ -148,6 +168,7 @@ class GitRepo {
     mkdirp(path.dirname(hook));
     fs.writeFileSync(hook, PRE_RECEIVE, { mode: 0o755 });
     this.writeProtect(name);
+    await this.ensureHead(name).catch(() => {});
   }
 
   writeProtect(name) {
@@ -166,6 +187,7 @@ class GitRepo {
   async create(name, opts = {}, identity) {
     if (!gitu.gitAvailable()) throw new HttpError(503, 'git is not installed on the server');
     name = this.checkName(name);
+    if (name.toLowerCase() === 'new') throw new HttpError(422, '"new" is a reserved name');
     if (this.exists(name)) throw new HttpError(409, `git repository ${name} already exists`);
     checkQuota(this);
     const dir = this.repoDir(name);
@@ -176,6 +198,9 @@ class GitRepo {
       protectedBranches: Array.isArray(opts.protectedBranches) ? opts.protectedBranches : [],
       pushMirrors: [],
     };
+    if (opts.private === true || opts.private === 'true' || opts.visibility === 'private') meta.private = true;
+    // a repository without an owner prefix belongs to its creator (owner/name repositories to "owner")
+    if (!name.includes('/') && identity && identity.name) meta.owner = identity.name;
     mkdirp(path.dirname(dir));
     try {
       if (opts.importUrl) {
@@ -200,10 +225,16 @@ class GitRepo {
       this.saveMeta(name, meta);
       if (meta.description) fs.writeFileSync(path.join(dir, 'description'), `${meta.description}\n`);
       await this.configure(name);
+      if (!opts.importUrl) {
+        const flag = (v) => v === true || v === 'true' || v === 'on';
+        await this.initFiles(name, { readme: flag(opts.readme) || flag(opts.autoInit) || flag(opts.auto_init), gitignore: opts.gitignore || opts.gitignore_template || '', license: opts.license || opts.license_template || '', description: meta.description, defaultBranch: opts.defaultBranch || 'main' }, identity);
+      }
     } catch (e) {
       rmrf(dir);
+      this.pruneParents(dir);
       throw e;
     }
+    this.dropRedirect(name);
     invalidate(this);
     this.app.audit(identity, 'git-create', `${this.conf.name}/${name}${opts.importUrl ? ` <- ${gitu.redact(opts.importUrl)}` : ''}`);
     this.app.events.emit('git.create', { repo: this.conf.name, name, mirror: !!meta.mirror, importedFrom: meta.importedFrom || null }, identity);
@@ -213,11 +244,7 @@ class GitRepo {
   async remove(name, identity) {
     name = this.requireRepo(name);
     rmrf(this.repoDir(name));
-    let d = path.dirname(this.repoDir(name));
-    while (d.startsWith(this.dir) && d !== this.dir) {
-      try { if (fs.readdirSync(d).length) break; fs.rmdirSync(d); } catch { break; }
-      d = path.dirname(d);
-    }
+    this.pruneParents(this.repoDir(name));
     invalidate(this);
     this.app.audit(identity, 'git-delete', `${this.conf.name}/${name}`);
     this.app.events.emit('git.delete', { repo: this.conf.name, name }, identity);
@@ -232,31 +259,45 @@ class GitRepo {
     });
   }
 
-  summary(name) {
-    const m = this.meta(name);
+  summary(name, m = this.meta(name)) {
     return {
       name,
       description: m.description || '',
+      private: !!m.private,
+      owner: this.ownerOf(name, m),
       mirror: m.mirror ? { url: m.mirror.url, enabled: m.mirror.enabled, lastSync: m.mirror.lastSync, status: m.mirror.status } : null,
       pushMirrors: (m.pushMirrors || []).length,
       created: m.created,
     };
   }
 
-  list(q = '') {
-    return this.names().filter((n) => !q || n.includes(q)).map((n) => this.summary(n));
+  /** Repositories the caller can see (private ones only for the owner, collaborators and admins). */
+  list(q = '', identity = null) {
+    const out = [];
+    for (const n of this.names()) {
+      if (q && !n.toLowerCase().includes(String(q).toLowerCase())) continue;
+      const m = this.meta(n);
+      const role = this.roleIn(n, identity, m);
+      if (!role) continue;
+      out.push({ ...this.summary(n, m), permission: role });
+    }
+    return out;
   }
 
-  listPackages(q = '') {
-    return this.list(q).map((s) => ({ name: s.name, version: '', description: s.description, modified: s.mirror ? s.mirror.lastSync : s.created }));
+  listPackages(q = '', identity = null) {
+    return this.list(q, identity).map((s) => ({ name: s.name, version: '', description: s.description, modified: s.mirror ? s.mirror.lastSync : s.created }));
   }
 
-  async info(name, base = '') {
+  async info(name, base = '', { identity, direct = false } = {}) {
     name = this.requireRepo(name);
     const cwd = this.repoDir(name);
+    const head = await this.ensureHead(name);
     const m = this.meta(name);
-    const head = (await gitu.run(['symbolic-ref', '--short', 'HEAD'], { cwd })).stdout.toString().trim();
     const [branches, tags] = await Promise.all([this.refs(name, 'heads'), this.refs(name, 'tags')]);
+    const rel = this.loadReleases(name).items;
+    const latest = rel.filter((r) => !r.draft && !r.prerelease).sort((a, b) => String(b.published_at).localeCompare(String(a.published_at)))[0];
+    const collab = this.loadPulls(name).items;
+    const count = branches.length ? Number((await gitu.run(['rev-list', '--count', 'HEAD'], { cwd })).stdout.toString().trim()) || 0 : 0;
     return {
       repo: this.conf.name,
       name,
@@ -266,7 +307,22 @@ class GitRepo {
       branches,
       tags,
       size: dirSize(cwd).bytes,
-      cloneUrl: base ? this.cloneUrl(base, name) : undefined,
+      cloneUrl: base ? this.cloneUrl(base, name, { direct }) : undefined,
+      cloneUrls: base ? { https: this.cloneUrl(base, name, { direct }), ssh: this.sshUrl(base, name) } : undefined,
+      private: !!m.private,
+      visibility: m.private ? 'private' : 'public',
+      owner: this.ownerOf(name, m),
+      collaborators: m.collaborators || {},
+      permissions: this.permissions(name, identity === undefined ? null : identity, m),
+      counts: {
+        commits: count,
+        branches: branches.length,
+        tags: tags.length,
+        releases: rel.filter((r) => !r.draft).length,
+        openPulls: collab.filter((i) => i.type === 'pull' && i.state === 'open').length,
+        openIssues: collab.filter((i) => i.type === 'issue' && i.state === 'open').length,
+      },
+      latestRelease: latest ? { id: latest.id, tag_name: latest.tag_name, name: latest.name, published_at: latest.published_at } : null,
       created: m.created,
       importedFrom: m.importedFrom || null,
       protectedBranches: m.protectedBranches || [],
@@ -322,6 +378,7 @@ class GitRepo {
 
   async commits(name, { ref, limit = 30, path: p } = {}) {
     name = this.requireRepo(name);
+    if (!ref) await this.ensureHead(name);
     const args = ['log', '--format=%H%x09%h%x09%an%x09%ae%x09%aI%x09%P%x09%s', `-n${Math.min(Number(limit) || 30, 500)}`, ref || 'HEAD'];
     if (p) args.push('--', p.replace(/^\/+/, ''));
     const r = await gitu.run(args, { cwd: this.repoDir(name) });
@@ -334,6 +391,7 @@ class GitRepo {
 
   async tree(name, { ref, path: p = '' } = {}) {
     name = this.requireRepo(name);
+    if (!ref) await this.ensureHead(name);
     const rel = String(p || '').replace(/^\/+/, '').replace(/\/+$/, '');
     if (rel.split('/').includes('..')) throw new HttpError(400, 'invalid path');
     const args = ['ls-tree', '-l', ref || 'HEAD'];
@@ -351,6 +409,7 @@ class GitRepo {
 
   async blob(name, { ref, path: p }) {
     name = this.requireRepo(name);
+    if (!ref) await this.ensureHead(name);
     const rel = String(p || '').replace(/^\/+/, '');
     if (!rel) throw new HttpError(400, 'path is required');
     const r = await gitu.run(['cat-file', 'blob', `${ref || 'HEAD'}:${rel}`], { cwd: this.repoDir(name) });
@@ -360,6 +419,7 @@ class GitRepo {
 
   async archive(name, { ref, format = 'tar.gz' } = {}) {
     name = this.requireRepo(name);
+    if (!ref) await this.ensureHead(name);
     if (!['tar.gz', 'tgz', 'zip', 'tar'].includes(format)) throw new HttpError(400, 'format must be tar.gz, zip or tar');
     const base = name.split('/').pop();
     const r = await gitu.run(['archive', `--format=${format === 'tgz' ? 'tar.gz' : format}`, `--prefix=${base}/`, ref || 'HEAD'], { cwd: this.repoDir(name) });
@@ -532,11 +592,24 @@ class GitRepo {
     const { req, res } = ctx;
     const parsed = this.parse(ctx.path);
     if (!parsed) throw new NotFoundLocal('not a git repository path');
-    const { name, sub } = parsed;
+    let { name, sub } = parsed;
+    // moved / renamed repository: the old URL keeps working
+    if (!this.exists(name)) {
+      const red = this.resolveRedirect(name);
+      if (red) {
+        const target = red.repo === this.conf.name ? this : this.app.repoConfig(red.repo) && this.app.repoHandler(red.repo);
+        if (target && target.conf.type === 'git' && target.exists(red.name)) {
+          if (target !== this) return target.handle({ ...ctx, path: `/${red.name}.git${sub}` });
+          name = red.name;
+        }
+      }
+    }
     if (!sub) {
       // browsing the repository URL in a web browser -> the administration
       if (/text\/html/.test(req.headers.accept || '') && this.exists(name)) {
-        return send(res, 302, null, { location: `/admin/#/git/${encodeURIComponent(this.conf.name)}/${name.split('/').map(encodeURIComponent).join('/')}` });
+        const direct = ctx.req._typeHostType === 'git';
+        const where = direct ? `/${name.split('/').map(encodeURIComponent).join('/')}` : `/admin/#/git/${encodeURIComponent(this.conf.name)}/${name.split('/').map(encodeURIComponent).join('/')}`;
+        return send(res, 302, null, { location: where });
       }
       throw this.exists(name) ? new HttpError(400, 'use git clone with this URL') : new NotFoundLocal(`git repository ${name} not found`);
     }
@@ -552,15 +625,18 @@ class GitRepo {
     } else {
       identity = this.app.auth.require(req, 'read', this.conf);
     }
-    res.removeHeader('www-authenticate');
 
     if (!this.exists(name)) {
-      if (write && sub === '/info/refs' && this.conf.autoCreate !== false) {
+      if (write && sub === '/info/refs' && this.conf.autoCreate !== false && name.toLowerCase() !== 'new') {
+        // auto-created repositories of another owner ("bob/x" pushed by alice) need publish rights only
         await this.create(name, {}, identity);
       } else {
         throw new NotFoundLocal(`git repository ${name} not found`);
       }
     }
+    // repository level: private repositories, owners and collaborators
+    this.access(name, identity, write ? 'write' : 'read');
+    res.removeHeader('www-authenticate');
     const meta = this.meta(name);
     if (write && meta.mirror) throw new HttpError(403, `${name} is a read-only mirror of ${meta.mirror.url}`);
     if (write) checkQuota(this);
@@ -572,17 +648,7 @@ class GitRepo {
     const before = write && sub === '/git-receive-pack' ? await this.refSnapshot(name) : null;
     const code = await this.backend(ctx, name, sub, identity, write);
     if (sub === '/git-upload-pack') this.app.statsStore.hit(this.conf.name, name);
-    if (before && code === 0) {
-      const changes = this.diffRefs(before, await this.refSnapshot(name));
-      if (changes.length) {
-        invalidate(this);
-        this.app.audit(identity, 'git-push', `${this.conf.name}/${name} ${changes.map((c) => c.ref.replace(/^refs\/(heads|tags)\//, '')).join(',')}`);
-        this.app.events.emit('git.push', { repo: this.conf.name, name, changes, cloneUrl: this.cloneUrl(ctx.rootBase, name) }, identity);
-        if ((this.meta(name).pushMirrors || []).some((p) => p.enabled)) {
-          this.sync(name, 'push', identity).catch((e) => this.app.log.warn(`push mirror ${name}: ${e.message}`));
-        }
-      }
-    }
+    if (before && code === 0) await this.afterRefChange(name, before, identity, ctx.rootBase, 'push');
   }
 
   /** Run `git http-backend` as CGI, streaming request and response. Resolves with the exit code. */
@@ -648,6 +714,6 @@ class GitRepo {
   }
 }
 
-Object.assign(GitRepo.prototype, pullsMixin);
+Object.assign(GitRepo.prototype, pullsMixin, manageMixin);
 
 module.exports = { GitRepo };

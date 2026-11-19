@@ -99,10 +99,44 @@ class TypeHosts {
     const s = this.app.stores.settings.get();
     if (type === 'git') {
       if (p === '/' || !GIT_SUB_RE.test(p)) return p; // home page and other web paths
+      // "git-registry/git/owner/name.git" (main host habit): the type host needs no /git - drop it
+      // instead of creating a repository called "git/owner/name"
+      if (/^\/git\//.test(p) && !this.gitRepoExists(repo, p)) p = p.slice(4);
       return repo === s.gitRepo ? `/git${p}` : `/r/${repo}${p}`;
     }
     if (repo === s.defaultRepo) return p;
     return p === '/' ? `/r/${repo}/` : `/r/${repo}${p}`;
+  }
+
+  gitRepoExists(repo, p) {
+    try {
+      const h = this.app.repoHandler(repo);
+      const parsed = h.parse(p);
+      return !!parsed && h.exists(parsed.name);
+    } catch { return false; }
+  }
+
+  /**
+   * Browser page requests on a type host get the web UI of that type (git, npm, docker) with the path as
+   * its route (git-registry/<owner>/<name>/tree/main/docs); the generic host keeps its file listings.
+   * Returns 'spa', 'admin' (full administration lives on the main host) or null.
+   */
+  page(type, req, p) {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return null;
+    if (!['git', 'npm', 'docker'].includes(type)) return null;
+    if (p === '/admin' || p === '/admin/' || p === '/admin/index.html') return 'admin';
+    const accept = String(req.headers.accept || '');
+    if (!/text\/html/.test(accept) || /application\/(json|vnd\.npm)/.test(accept)) return null;
+    if (/^\/(?:api\/v1(?:\/|$)|-\/|\.well-known\/|static\/|admin\/|v2(?:\/|$)|downloads(?:\/|$)|docs\/|install\.sh$|favicon\.)/.test(p)) return null;
+    if (type === 'git' && /(?:\/(?:info\/refs|git-upload-pack|git-receive-pack))$/.test(p)) return null;
+    return 'spa';
+  }
+
+  /** Main host of the registry (full administration): the public URL, or the type host without "{type}-". */
+  mainUrl(req, th) {
+    if (this.app.config.publicUrl) return this.app.config.publicUrl.replace(/\/+$/, '');
+    const proto = String(req.headers['x-forwarded-proto'] || (req.socket && req.socket.encrypted ? 'https' : 'http')).split(',')[0].trim();
+    return `${proto}://${th.host.replace(new RegExp(`^${th.type}-`), '')}`;
   }
 
   /** Public description for the status / admin UI. */

@@ -25,12 +25,13 @@ RUN node tools/build.js && mkdir -p /data && chown -R node:node /data /app/dist 
 
 ENV RR_DATA_DIR=/data \
     RR_PORT=4873 \
+    RR_SSH_PORT=2222 \
     RR_HOST=0.0.0.0 \
     NODE_ENV=production
 
 USER node
 VOLUME ["/data"]
-EXPOSE 4873
+EXPOSE 4873 2222
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget -qO- "http://127.0.0.1:${RR_PORT}/-/ping" >/dev/null || exit 1

@@ -16,12 +16,14 @@ const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 const { loadConfig } = require('./config');
-const { HttpError, NotFoundLocal, sendError, sendJson, readBody, baseUrl } = require('./util/http');
+const { HttpError, NotFoundLocal, send, sendError, sendJson, readBody, baseUrl } = require('./util/http');
 const { gitAvailable } = require('./util/git');
 const { JsonStore, mkdirp, readJsonFile, rmrf, dirSize } = require('./util/store');
 const { Auth } = require('./auth');
 const { Portal } = require('./portal');
 const { TypeHosts } = require('./typehosts');
+const { SshKeys } = require('./ssh/keys');
+const { SshServer } = require('./ssh/server');
 const { Transfer } = require('./transfer');
 const { Cache } = require('./cache');
 const { PluginManager } = require('./plugins');
@@ -101,6 +103,8 @@ class App {
     this.auth = new Auth(this);
     this.portal = new Portal(process.env, this.log);
     this.typeHosts = new TypeHosts(this);
+    this.sshKeys = new SshKeys(this);
+    this.ssh = new SshServer(this);
     this.transfer = new Transfer(this);
     this.handlers = new Map();
     this.events = new Events(this);
@@ -436,6 +440,10 @@ class App {
       // {type}-{app}.<domain>: one repository type at the host root (see typehosts.js)
       const th = this.typeHosts.match(req);
       if (th) {
+        req._typeHostType = th.type;
+        const page = this.typeHosts.page(th.type, req, p);
+        if (page === 'admin') return send(res, 302, null, { location: `${this.typeHosts.mainUrl(req, th)}/admin/` });
+        if (page === 'spa') { req._typeHost = th.host; return this.web.spa(req, res, th); }
         const np = this.typeHosts.rewrite(th.type, p);
         if (np === null) throw new HttpError(404, `no ${th.type} repository on this registry`);
         req._typeHost = th.host;
@@ -526,10 +534,14 @@ class App {
     this.server.requestTimeout = 0;
     if (this.config.scheduler !== false) this.scheduler.start();
     return new Promise((resolve) => {
-      this.server.listen(port, host, () => {
+      this.server.listen(port, host, async () => {
         this.port = this.server.address().port;
         this.typeHosts.schedule(500);
         this.log.info(`RR Registry ${this.config.version} listening on http://${host}:${this.port} (data: ${this.config.dataDir})`);
+        // git over SSH (RR_SSH_PORT); a busy port is logged and does not stop the registry
+        if (this.config.sshPort || (this.config.sshPort === 0 && this.config.sshEphemeral)) {
+          await this.ssh.listen(this.config.sshPort, this.config.sshBind || host).catch((e) => this.log.warn(`SSH server not started: ${e.message}`));
+        }
         resolve(this);
       });
     });
@@ -538,6 +550,7 @@ class App {
   close() {
     this.scheduler.stop();
     this.typeHosts.stop();
+    this.ssh.close().catch(() => {});
     try { this.statsStore.flush(); } catch { /* ignore */ }
     return new Promise((resolve) => {
       if (!this.server) return resolve();

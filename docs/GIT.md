@@ -10,6 +10,8 @@ Docker image ho obsahuje (balíčky `git` a `git-daemon`), při spuštění bez 
 |---|---|
 | `http://HOST:4873/git/<název>.git` | výchozí git repozitář (nastavení `gitRepo`, výchozí `git`) |
 | `http://HOST:4873/r/<repo>/<název>.git` | libovolný repozitář typu git |
+| `http://git-registry.<doména>/<název>.git` | výchozí git repozitář na vlastním hostu typu (bez `/git`) |
+| `ssh://git@HOST:2222/<název>.git` | git přes SSH (`RR_SSH_PORT`), jiný repozitář: `ssh://git@HOST:2222/r/<repo>/<název>.git` |
 
 `<název>` může obsahovat lomítka (`tym/projekt`, max. 4 úrovně) a přípona `.git` je volitelná.
 Když URL otevřete v prohlížeči, přesměruje vás do Web GUI.
@@ -27,6 +29,38 @@ Přihlášení probíhá přes HTTP Basic. Použít můžete:
 - libovolné jméno a jako heslo `RR_API_TOKEN`.
 
 Čtení je anonymní, pokud je repozitář veřejný a v nastavení je povolené `anonymousRead`. Push vyžaduje roli publisher nebo admin, případně ACL `publish`.
+
+### Host typu git a webové rozhraní (1.7)
+
+Na hostu `git-registry.<doména>` (viz [PORTAL.md](PORTAL.md)) je jen git: webové rozhraní ve stylu GitHubu
+s adresami bez typu registru – `git-registry.<doména>/<vlastník>/<název>`, `…/tree/<větev>/<cesta>`,
+`…/blob/<větev>/<soubor>`, `…/commits/<větev>`, `…/releases`, `…/settings` – a klonování z
+`git-registry.<doména>/<vlastník>/<název>.git`. Omylem přidané `/git/` v URL host toleruje.
+Veřejné repozitáře lze procházet i bez přihlášení. Plná administrace celého registru je na hlavní adrese
+`registry.<doména>/admin/`, kde je typ součástí cesty (`#/git/<repo>/<vlastník>/<název>`).
+
+### SSH (1.7)
+
+Server má vlastní SSH server pro git (bez závislostí): `RR_SSH_PORT` (výchozí v Dockeru a `.env.example` 2222, `0` = vypnuto),
+pro URL za NATem `RR_SSH_PUBLIC_HOST` / `RR_SSH_PUBLIC_PORT`. Podporuje klíče ssh-ed25519, ecdsa-sha2-nistp256/384/521
+a RSA (rsa-sha2-256/512), přihlášení heslem / tokenem a protokol v2. Oprávnění jsou stejná jako přes HTTPS.
+
+```bash
+rr ssh-key add ~/.ssh/id_ed25519.pub laptop        # nebo Web GUI → Můj účet a SSH klíče
+git clone ssh://git@registry.firma.cz:2222/tym/projekt.git
+ssh -p 2222 git@registry.firma.cz                  # „Hi <uživatel>! You've successfully authenticated…“
+```
+
+Klíč serveru (`data/config/ssh_host_ed25519_key`) se vytvoří při prvním startu; jeho otisk je v logu.
+
+### Viditelnost, vlastník a spolupracovníci (1.7)
+
+| | Kdo |
+|---|---|
+| **veřejný** repozitář | čte každý s právem čtení v úložišti, zapisuje role publisher+ |
+| **soukromý** repozitář | jen vlastník, spolupracovníci a administrátoři; ostatním se jeví jako neexistující |
+| **vlastník** | `owner/…` z názvu, jinak autor; má práva správce repozitáře (nastavení, přesun, smazání) |
+| **spolupracovníci** | `read` / `write` / `admin` – `PUT …/access {collaborators: {bob: "write"}}` |
 
 Příklad pro git credential store:
 
@@ -47,9 +81,27 @@ git config --global credential.http://localhost:4873.username admin
 | archiv | `rr git archive git tym/projekt v1.0 out.tgz` | `GET …/archive?ref=&format=tar.gz\|zip` |
 | chráněné větve | `rr git protect git tym/projekt main,release/*` | `PUT …` `{protectedBranches}` |
 | výchozí větev / popis | – | `PUT …` `{defaultBranch, description}` |
+| nový jako na GitHubu | `rr git create git tym/projekt --private --readme --gitignore Node --license MIT` | `POST …` `{name, visibility, readme, gitignore, license}` |
+| přejmenovat / přesunout | `rr git mv git tym/projekt tym/novy [git2]` | `POST …/move` `{name, repo}` |
+| viditelnost / spolupracovníci | `rr git visibility …` · `rr git collab … bob write` | `PUT …/access` |
+| větve | `rr git branch git tym/projekt create dev main` · `rename` · `default` · `protect` · `rm` | `GET …/branches?detailed=1`, `POST …/branches`, `PATCH …/branches/<větev>` `{name, default, protected}`, `DELETE` |
+| tagy | `rr git tag git tym/projekt create v1.0 main "zpráva"` | `GET/POST …/tags`, `DELETE …/tags/<tag>` |
+| releases | `rr git release git tym/projekt create v1.0 "Verze 1" --notes` · `upload 1 app.zip` | `…/releases`, `…/releases/<id>/assets?name=`, `…/releases/latest`, `…/releases/tags/<tag>` |
+| soubor commitem | `rr git put git tym/projekt docs/a.md a.md main` | `PUT …/contents` `{path, content, encoding, branch, sha}`, `POST …/commit-files`, `DELETE …/contents?path=` |
+| detail commitu | `rr git commit git tym/projekt <sha>` | `GET …/commits/<sha>` |
 | smazání | `rr git rm git tym/projekt` | `DELETE …` |
 
-Ve Web GUI je sekce **🌿 Git**: seznam repozitářů, import, detail s výběrem větve nebo tagu, prohlížeč souborů s náhledem README, historie commitů, větve a tagy, pull requesty a issues, stahování archivů a karta „Zrcadla a nastavení“.
+Přejmenovaný nebo přesunutý repozitář je dál dostupný i pod starou adresou (clone, fetch, push) – dokud
+staré jméno nepoužije nový repozitář. Výchozí větev, která v repozitáři neexistuje (např. první push `master`
+do repozitáře s HEAD → `main`), server opraví automaticky.
+
+Ve Web GUI je sekce **🌿 Git** ve stylu GitHubu: seznam repozitářů, **nový repozitář** (vlastník, viditelnost,
+README / .gitignore / licence), u prázdného repozitáře **Rychlé nastavení** s HTTPS / SSH adresou a příkazy,
+kód s vykresleným **README** (Markdown s odkazy na další dokumenty, obrázky z repozitáře a kotvami), soubory
+s čísly řádků a náhledem Markdownu, **úpravy, nové soubory a nahrávání** přímo z prohlížeče (commit do větve
+nebo nové větve), historie commitů s **diffy**, **větve** (před/za výchozí větví, přejmenování, ochrana),
+**tagy**, **releases** s poznámkami a soubory, pull requesty a issues a **nastavení** (přejmenování, přesun,
+viditelnost, spolupracovníci, ochrana větví, zrcadla, smazání).
 V bash GUI (`rr-gui`) najdete totéž v menu **G – Git repozitáře**.
 
 **Chráněné větve** (glob vzory jako `main`, `release/*`, `refs/tags/*`) nepovolují force-push ani smazání. Zajišťuje to `pre-receive` hook, který server do každého repozitáře instaluje.
@@ -166,7 +218,7 @@ a zavření / znovuotevření. Odkazy `html_url` z API vedou přímo sem (`/admi
 
 ## Události
 
-Akce v git repozitářích generují události `git.create`, `git.push` (seznam změněných refů – i po sloučení PR), `git.sync` a `git.delete`,
+Akce v git repozitářích generují události `git.create`, `git.push` (seznam změněných refů – i po sloučení PR, commitu z webu, změně větví a tagů; `via`), `git.sync`, `git.move`, `git.release` a `git.delete`,
 pro pull requesty a issues `git.pull.opened`, `git.pull.closed`, `git.pull.reopened`, `git.pull.merged`,
 `git.issue.opened`, `git.issue.closed`, `git.issue.reopened` a `git.comment`.
 Ty lze posílat webhookem (viz [ADVANCED.md](ADVANCED.md)).

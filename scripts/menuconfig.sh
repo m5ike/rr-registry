@@ -9,8 +9,8 @@ ENV_FILE="${ENV_FILE:-$ROOT/.env}"
 randtok() { LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c "${1:-40}" || true; }
 
 # --- defaults, then .env.example, then existing .env
-declare -a KEYS=(RR_PORT RR_BIND RR_PUBLIC_URL RR_ADMIN_USER RR_ADMIN_PASSWORD RR_API_TOKEN RR_DEFAULT_REPO RR_UPSTREAM RR_CACHE_TTL RR_MAX_BODY_MB RR_DATA_PATH RR_CONTAINER RR_UID RR_GID RR_LOG_REQUESTS)
-RR_PORT=4873; RR_BIND=0.0.0.0; RR_PUBLIC_URL=""; RR_ADMIN_USER=admin; RR_ADMIN_PASSWORD=""; RR_API_TOKEN=""
+declare -a KEYS=(RR_PORT RR_SSH_PORT RR_BIND RR_PUBLIC_URL RR_ADMIN_USER RR_ADMIN_PASSWORD RR_API_TOKEN RR_DEFAULT_REPO RR_UPSTREAM RR_CACHE_TTL RR_MAX_BODY_MB RR_DATA_PATH RR_CONTAINER RR_UID RR_GID RR_LOG_REQUESTS)
+RR_PORT=4873; RR_SSH_PORT=2222; RR_BIND=0.0.0.0; RR_PUBLIC_URL=""; RR_ADMIN_USER=admin; RR_ADMIN_PASSWORD=""; RR_API_TOKEN=""
 RR_DEFAULT_REPO=npm; RR_UPSTREAM=https://registry.npmjs.org; RR_CACHE_TTL=300; RR_MAX_BODY_MB=200
 RR_DATA_PATH=./data; RR_CONTAINER=rr-registry; RR_UID="$(id -u)"; RR_GID="$(id -g)"; RR_LOG_REQUESTS=1
 
@@ -37,6 +37,7 @@ save() {
   } >"$ENV_FILE"
   echo "Konfigurace uložena do $ENV_FILE"
   echo "  port:      $RR_PORT"
+  echo "  ssh (git): ${RR_SSH_PORT:-vypnuto}"
   echo "  admin:     $RR_ADMIN_USER / (heslo v .env)"
   echo "  api_token: ${RR_API_TOKEN:0:8}…"
   echo "Restartujte server: make restart (Docker) nebo make run (lokálně)."
@@ -44,6 +45,7 @@ save() {
 
 validate() {
   [[ "$RR_PORT" =~ ^[0-9]+$ ]] && [ "$RR_PORT" -ge 1 ] && [ "$RR_PORT" -le 65535 ] || { echo "Neplatný port: $RR_PORT"; return 1; }
+  [[ "${RR_SSH_PORT:-0}" =~ ^[0-9]+$ ]] && [ "${RR_SSH_PORT:-0}" -le 65535 ] || { echo "Neplatný SSH port: $RR_SSH_PORT"; return 1; }
   [ "${#RR_ADMIN_PASSWORD}" -ge 4 ] || { echo "Heslo administrátora musí mít aspoň 4 znaky"; return 1; }
   [ "${#RR_API_TOKEN}" -ge 16 ] || { echo "API token musí mít aspoň 16 znaků"; return 1; }
   [[ "$RR_CACHE_TTL" =~ ^[0-9]+$ ]] || { echo "Neplatné TTL"; return 1; }
@@ -66,6 +68,7 @@ if [ -z "$DLG" ]; then
   echo "== RR Registry – konfigurace (Enter = ponechat hodnotu) =="
   ask() { local k="$1" label="$2" v; read -r -p "$label [${!k}]: " v; [ -n "$v" ] && printf -v "$k" '%s' "$v"; return 0; }
   ask RR_PORT "Port web backendu"
+  ask RR_SSH_PORT "Port SSH pro git (0 = vypnuto)"
   ask RR_BIND "Adresa pro publikování portu (0.0.0.0 / 127.0.0.1)"
   ask RR_PUBLIC_URL "Veřejná URL (prázdné = automaticky)"
   ask RR_ADMIN_USER "Uživatel administrátora"
@@ -88,6 +91,7 @@ editpw() { local k="$1" label="$2" v; v=$(ui --title "$label" --passwordbox "$la
 while true; do
   choice=$(ui --title "Konfigurace web backendu" --ok-button "Upravit" --cancel-button "Konec" --menu "Vyberte položku (uloží se do .env):" 24 84 15 \
     PORT      "Port web backendu ........... $RR_PORT" \
+    SSH       "Port SSH (git) .............. ${RR_SSH_PORT:-0}" \
     BIND      "Publikovat na adrese ........ $RR_BIND" \
     URL       "Veřejná URL ................. ${RR_PUBLIC_URL:-(automaticky)}" \
     ADMIN     "Uživatel administrátora ..... $RR_ADMIN_USER" \
@@ -104,6 +108,7 @@ while true; do
     QUIT      ">> Ukončit bez uložení") || choice=QUIT
   case "$choice" in
     PORT) edit RR_PORT "Port web backendu (1-65535)" ;;
+    SSH) edit RR_SSH_PORT "Port SSH serveru pro git clone/push (1-65535, 0 = vypnuto)" ;;
     BIND) edit RR_BIND "Adresa hostitele pro publikování portu (0.0.0.0 = všude, 127.0.0.1 = jen lokálně)" ;;
     URL) edit RR_PUBLIC_URL "Veřejná URL serveru, např. https://npm.firma.cz (prázdné = z hlavičky Host)" ;;
     ADMIN) edit RR_ADMIN_USER "Uživatelské jméno administrátora" ;;

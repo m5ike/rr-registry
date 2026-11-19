@@ -24,6 +24,7 @@ const SECTIONS = [
   { id: 'plugins', title: 'Vlastní pluginy', description: 'soubory data/plugins/*.js' },
   { id: 'users', title: 'Uživatelé', description: 'účty, role, hesla (hash)', secret: true },
   { id: 'tokens', title: 'Tokeny', description: 'API a npm tokeny (hash)', secret: true },
+  { id: 'sshkeys', title: 'SSH klíče', description: 'veřejné klíče uživatelů pro git přes SSH' },
   { id: 'repos', title: 'Repozitáře – konfigurace', description: 'typy, ACL, kvóty, retence, skupiny' },
   { id: 'content', title: 'Repozitáře – obsah', description: 'balíčky, image, git repozitáře, soubory' },
   { id: 'routes', title: 'Směrovací pravidla', description: 'pravidla routingu vč. tokenů pro cíle', secret: true },
@@ -74,6 +75,7 @@ class Transfer {
         if (sec.id === 'plugins') items = plugins.map((f) => ({ id: f, title: f }));
         if (sec.id === 'users') items = Object.values(s.users.get()).map((u) => ({ id: u.name, title: `${u.name} (${u.role})` }));
         if (sec.id === 'tokens') items = s.tokens.get().map((t) => ({ id: t.id, title: `${t.name} · ${t.user}` }));
+        if (sec.id === 'sshkeys') items = this.app.sshKeys.store.get().map((k) => ({ id: k.id, title: `${k.title} · ${k.user} (${k.type})` }));
         if (sec.id === 'repos') items = s.repos.get().map((r) => ({ id: r.name, title: `${r.name} (${r.type})` }));
         if (sec.id === 'content') items = s.repos.get().map((r) => ({ id: r.name, title: r.name, ...dirSize(path.join(c.dataDir, 'repos', r.name)) }));
         if (sec.id === 'routes') items = s.routes.get().map((r) => ({ id: r.id, title: r.name }));
@@ -118,6 +120,9 @@ class Transfer {
     const tokens = pick('tokens', s.tokens.get(), (t) => t.id);
     if (tokens.length) files.push({ name: 'tokens/tokens.json', data: json(tokens), mode: 0o600 });
     tokens.forEach((t) => items.tokens.push({ id: t.id, title: `${t.name} · ${t.user}`, meta: { user: t.user } }));
+    const keys = pick('sshkeys', this.app.sshKeys.store.get(), (k) => k.id);
+    if (keys.length) files.push({ name: 'sshkeys/sshkeys.json', data: json(keys) });
+    keys.forEach((k) => items.sshkeys.push({ id: k.id, title: `${k.title} · ${k.user} (${k.type})`, meta: { user: k.user, fingerprint: k.fingerprint } }));
     const repos = pick('repos', s.repos.get(), (r) => r.name);
     if (repos.length) files.push({ name: 'repos/repos.json', data: json(repos) });
     repos.forEach((r) => items.repos.push({ id: r.name, title: `${r.name} (${r.type})`, meta: { type: r.type, members: r.members || null } }));
@@ -165,7 +170,7 @@ class Transfer {
     yield { name: 'manifest.json', data: json(manifest) };
     // fixed order: config first, repository content, then the rest
     const byPrefix = (p) => files.filter((f) => f.name.startsWith(p));
-    for (const p of ['server/', 'secret/', 'plugins/', 'users/', 'tokens/', 'repos/']) yield* byPrefix(p);
+    for (const p of ['server/', 'secret/', 'plugins/', 'users/', 'tokens/', 'sshkeys/', 'repos/']) yield* byPrefix(p);
     yield* contentFiles;
     for (const p of ['routes/', 'webhooks/', 'settings/', 'stats/', 'audit/']) yield* byPrefix(p);
     yield* cacheFiles;
@@ -443,6 +448,15 @@ class Transfer {
           target = path.join(c.dataDir, 'config', 'tokens.json');
           const t = tokens.find((x) => x.id === o.key);
           if (t) need(`users:${t.user}`, `uživatel ${t.user}`, !!s.users.get()[t.user] || t.user === c.adminUser || (sel('server:server') && t.user === (b.get('server/server.json') || {}).adminUser));
+          break;
+        }
+        case 'sshkeys': {
+          const k = (b.get('sshkeys/sshkeys.json') || []).find((x) => x.id === o.key);
+          const local = this.app.sshKeys.store.get();
+          exists = local.some((x) => x.id === o.key);
+          target = path.join(c.dataDir, 'config', 'sshkeys.json');
+          if (k && local.some((x) => x.fingerprint === k.fingerprint && x.id !== k.id)) o.warnings.push('stejný klíč už má jiný záznam – import ho nahradí');
+          if (k) need(`users:${k.user}`, `uživatel ${k.user}`, !!s.users.get()[k.user] || k.user === c.adminUser || !!k.role);
           break;
         }
         case 'repos': {
@@ -734,6 +748,11 @@ class Transfer {
         const t = (b.get('tokens/tokens.json') || []).find((x) => x.id === o.key);
         s.tokens.update((l) => [...l.filter((x) => x.id !== t.id), t]);
         return `${t.name} · ${t.user}`;
+      }
+      case 'sshkeys': {
+        const k = (b.get('sshkeys/sshkeys.json') || []).find((x) => x.id === o.key);
+        this.app.sshKeys.store.update((l) => [...l.filter((x) => x.id !== k.id && x.fingerprint !== k.fingerprint), k]);
+        return `${k.title} · ${k.user}`;
       }
       case 'repos': {
         const r = { ...(b.get('repos/repos.json') || []).find((x) => x.name === o.key) };

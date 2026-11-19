@@ -43,6 +43,12 @@ function loadConfig(overrides = {}) {
     // committer of commits the server creates itself (merging pull requests)
     gitCommitterName: env.RR_GIT_COMMITTER_NAME || 'RR Registry',
     gitCommitterEmail: env.RR_GIT_COMMITTER_EMAIL || 'rr@localhost',
+    // git over SSH: RR_SSH_PORT=0 (or empty) disables the SSH server
+    sshPort: env.RR_SSH_PORT !== undefined && env.RR_SSH_PORT !== '' ? Number(env.RR_SSH_PORT) : 0,
+    sshBind: env.RR_SSH_HOST || '',
+    sshPublicHost: env.RR_SSH_PUBLIC_HOST || '',
+    sshPublicPort: env.RR_SSH_PUBLIC_PORT ? Number(env.RR_SSH_PUBLIC_PORT) : 0,
+    sshDebug: env.RR_SSH_DEBUG === '1',
     distDir: path.join(ROOT, 'dist'),
     webDir: path.join(ROOT, 'web'),
     specFile: path.join(ROOT, 'api', 'spec.json'),

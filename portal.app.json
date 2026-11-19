@@ -40,6 +40,15 @@
       }
     }
   ],
+  "tcp": [
+    {
+      "id": "ssh",
+      "port": 2222,
+      "env": "RR_SSH_PORT",
+      "publicEnv": "RR_SSH_PUBLIC_PORT",
+      "description": "git přes SSH (ssh://git@<host>:<port>/<vlastník>/<název>.git)"
+    }
+  ],
   "env": {
     "host": "RR_HOST",
     "port": "RR_PORT",

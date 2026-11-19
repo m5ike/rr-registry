@@ -55,6 +55,25 @@ function createWeb(app) {
     return tpl.replace(/\{\{(\w+)\}\}/g, (m, k) => (k in vars ? String(vars[k]) : m));
   }
 
+  /**
+   * Configuration of the web UI (admin.js): portal sign-in, git over SSH and - on a type host
+   * (git-registry.<domain>, ...) - the type, its repository and the main host with the full administration.
+   */
+  function uiConfig(req) {
+    const cfg = { baseUrl: '', portal: !!(app.portal && app.portal.enabled), version: c.version };
+    if (app.ssh && app.ssh.port) cfg.ssh = { port: app.ssh.publicPort || app.ssh.port, host: c.sshPublicHost || '' };
+    const th = app.typeHosts.match(req);
+    if (th) cfg.typeHost = { type: th.type, repo: app.typeHosts.repoFor(th.type), host: th.host, mainUrl: app.typeHosts.mainUrl(req, th) };
+    return cfg;
+  }
+
+  /** The web UI for a page of a type host; the browser path is its route (no #). */
+  function spa(req, res) {
+    const html = fileOr(path.join(c.webDir, 'admin', 'index.html'));
+    if (!html) return send(res, 404, 'web UI not found', { 'content-type': 'text/plain' });
+    return send(res, 200, html, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' });
+  }
+
   async function serve(req, res, url) {
     if (req.method !== 'GET' && req.method !== 'HEAD') return false;
     const p = url.pathname;
@@ -76,9 +95,7 @@ function createWeb(app) {
     if (p.startsWith('/admin/')) {
       const rel = p.slice('/admin/'.length) || 'index.html';
       if (rel === 'config.js') {
-        // portal: attached to the AI Tools Portal -> the login form offers "sign in with the portal account"
-        const portal = !!(app.portal && app.portal.enabled);
-        send(res, 200, `window.RR_CONFIG = { baseUrl: "", portal: ${portal} };\n`, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-store' });
+        send(res, 200, `window.RR_CONFIG = ${JSON.stringify(uiConfig(req))};\n`, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-store' });
         return true;
       }
       const data = rel === 'rr-client.js' ? clientJs() : fileOr(safeJoin(path.join(c.webDir, 'admin'), rel));
@@ -120,7 +137,7 @@ function createWeb(app) {
     return false;
   }
 
-  return { serve, homepage };
+  return { serve, homepage, spa, uiConfig };
 }
 
 module.exports = { createWeb };

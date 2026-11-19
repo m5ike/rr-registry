@@ -34,6 +34,9 @@ Každá operace je dostupná ve všech klientech:
 | `login` | `POST /api/v1/auth/login` | none | Přihlášení jménem a heslem -> token {username, password}<br>body: json | `rr_api_login` |
 | `logout` | `POST /api/v1/auth/logout` | user | Zneplatní aktuální token | `rr_api_logout` |
 | `whoami` | `GET /api/v1/auth/whoami` | user | Informace o přihlášeném uživateli | `rr_api_whoami` |
+| `listSshKeys` | `GET /api/v1/user/keys` | user | SSH klíče přihlášeného uživatele (admin: ?user=jméno nebo ?user=* pro všechny)<br>query: `user` | `rr_api_list_ssh_keys` |
+| `addSshKey` | `POST /api/v1/user/keys` | user | Přidat SSH klíč {title, key} (ssh-ed25519, ecdsa-sha2-*, ssh-rsa)<br>body: json | `rr_api_add_ssh_key` |
+| `deleteSshKey` | `DELETE /api/v1/user/keys/:id` | user | Odebrat SSH klíč | `rr_api_delete_ssh_key` |
 
 ## repos
 
@@ -87,11 +90,11 @@ Každá operace je dostupná ve všech klientech:
 | Operace | Metoda a cesta | Auth | Popis | Bash |
 |---|---|---|---|---|
 | `listGitRepos` | `GET /api/v1/repos/:repo/git` | read | Git repozitáře v repozitáři typu git<br>query: `q` | `rr_api_list_git_repos` |
-| `createGitRepo` | `POST /api/v1/repos/:repo/git` | publish | Vytvořit git repozitář {name, description, defaultBranch} nebo importovat/zrcadlit (jen admin) {importUrl, mirror, interval, ttl, token, username}<br>body: json | `rr_api_create_git_repo` |
+| `createGitRepo` | `POST /api/v1/repos/:repo/git` | publish | Vytvořit git repozitář {name, description, defaultBranch, visibility: public|private, readme, gitignore, license} nebo importovat/zrcadlit (jen admin) {importUrl, mirror, interval, ttl, token, username}<br>body: json | `rr_api_create_git_repo` |
 | `githubImport` | `POST /api/v1/repos/:repo/git/github-import` | admin | Hromadný import / zrcadlení repozitářů z GitHubu {owner, token, kind: auto|user|org|mine, mirror, interval, filter, includeForks, includeArchived, limit, prefix}<br>body: json | `rr_api_github_import` |
 | `getGitRepo` | `GET /api/v1/repos/:repo/git/:name` | read | Detail git repozitáře (větve, tagy, zrcadla, URL pro klonování) | `rr_api_get_git_repo` |
-| `updateGitRepo` | `PUT /api/v1/repos/:repo/git/:name` | admin | Upravit git repozitář {description, defaultBranch, protectedBranches, mirror: {url, token, interval, ttl, enabled} | null}<br>body: json | `rr_api_update_git_repo` |
-| `deleteGitRepo` | `DELETE /api/v1/repos/:repo/git/:name` | admin | Smazat git repozitář | `rr_api_delete_git_repo` |
+| `updateGitRepo` | `PUT /api/v1/repos/:repo/git/:name` | publish | Upravit git repozitář {description, defaultBranch, protectedBranches, mirror: {url, token, interval, ttl, enabled} | null} – správce repozitáře (vlastník); zrcadlení jen admin<br>body: json | `rr_api_update_git_repo` |
+| `deleteGitRepo` | `DELETE /api/v1/repos/:repo/git/:name` | publish | Smazat git repozitář (správce repozitáře – vlastník nebo admin) | `rr_api_delete_git_repo` |
 | `gitCommits` | `GET /api/v1/repos/:repo/git/:name/commits` | read | Historie commitů<br>query: `ref`, `limit`, `path` | `rr_api_git_commits` |
 | `gitTree` | `GET /api/v1/repos/:repo/git/:name/tree` | read | Obsah adresáře ve větvi/tagu/commitu<br>query: `ref`, `path` | `rr_api_git_tree` |
 | `gitBlob` | `GET /api/v1/repos/:repo/git/:name/blob` | read | Obsah souboru ve větvi/tagu/commitu<br>query: `ref`, `path` | `rr_api_git_blob` |
@@ -99,7 +102,7 @@ Každá operace je dostupná ve všech klientech:
 | `gitSync` | `POST /api/v1/repos/:repo/git/:name/sync` | publish | Synchronizovat zrcadla hned {direction: pull|push|both}<br>body: json | `rr_api_git_sync` |
 | `addGitPushMirror` | `POST /api/v1/repos/:repo/git/:name/push-mirrors` | admin | Přidat push zrcadlo {url, token, username, mode: mirror|branches, createMissing, private}<br>body: json | `rr_api_add_git_push_mirror` |
 | `deleteGitPushMirror` | `DELETE /api/v1/repos/:repo/git/:name/push-mirrors/:id` | admin | Odebrat push zrcadlo | `rr_api_delete_git_push_mirror` |
-| `listGitBranches` | `GET /api/v1/repos/:repo/git/:name/branches` | read | Větve ve tvaru GitHubu [{name, commit: {sha}, protected}] | `rr_api_list_git_branches` |
+| `listGitBranches` | `GET /api/v1/repos/:repo/git/:name/branches` | read | Větve ve tvaru GitHubu [{name, commit: {sha}, protected}]; ?detailed=1 – s posledním commitem, výchozí, ahead/behind<br>query: `detailed` | `rr_api_list_git_branches` |
 | `listGitPulls` | `GET /api/v1/repos/:repo/git/:name/pulls` | read | Pull requesty (nejnovější první); head může být „owner:větev“<br>query: `state`, `head`, `base` | `rr_api_list_git_pulls` |
 | `createGitPull` | `POST /api/v1/repos/:repo/git/:name/pulls` | publish | Vytvořit pull request {title, head, base, body, draft} (422 když větev neexistuje nebo head = base)<br>body: json | `rr_api_create_git_pull` |
 | `getGitPull` | `GET /api/v1/repos/:repo/git/:name/pulls/:number` | read | Detail pull requestu včetně mergeable / mergeable_state (clean|dirty|unknown) spočítaného z aktuálních větví | `rr_api_get_git_pull` |
@@ -113,6 +116,28 @@ Každá operace je dostupná ve všech klientech:
 | `updateGitIssue` | `PATCH /api/v1/repos/:repo/git/:name/issues/:number` | publish | Upravit issue nebo pull request {title, body, state: open|closed, labels}<br>body: json | `rr_api_update_git_issue` |
 | `listGitIssueComments` | `GET /api/v1/repos/:repo/git/:name/issues/:number/comments` | read | Komentáře issue nebo pull requestu | `rr_api_list_git_issue_comments` |
 | `createGitIssueComment` | `POST /api/v1/repos/:repo/git/:name/issues/:number/comments` | publish | Přidat komentář k issue nebo pull requestu {body}<br>body: json | `rr_api_create_git_issue_comment` |
+| `gitTemplates` | `GET /api/v1/git/templates` | none | Šablony pro nový git repozitář: názvy .gitignore a licencí, nebo obsah jedné (?gitignore=Node | ?license=MIT&holder=jméno)<br>query: `gitignore`, `license`, `holder` | `rr_api_git_templates` |
+| `moveGitRepo` | `POST /api/v1/repos/:repo/git/:name/move` | publish | Přejmenovat nebo přesunout git repozitář {name, repo} – staré URL dál fungují (přesměrování)<br>body: json | `rr_api_move_git_repo` |
+| `setGitAccess` | `PUT /api/v1/repos/:repo/git/:name/access` | publish | Viditelnost a oprávnění {visibility: public|private, owner, collaborators: {user: read|write|admin}}<br>body: json | `rr_api_set_git_access` |
+| `gitCommit` | `GET /api/v1/repos/:repo/git/:name/commits/:sha` | read | Detail commitu se změněnými soubory a patchem | `rr_api_git_commit` |
+| `createGitBranch` | `POST /api/v1/repos/:repo/git/:name/branches` | publish | Vytvořit větev {name, from}<br>body: json | `rr_api_create_git_branch` |
+| `updateGitBranch` | `PATCH /api/v1/repos/:repo/git/:name/branches/:branch` | publish | Přejmenovat větev / nastavit jako výchozí / chránit {name, default, protected}<br>body: json | `rr_api_update_git_branch` |
+| `deleteGitBranch` | `DELETE /api/v1/repos/:repo/git/:name/branches/:branch` | publish | Smazat větev (ne výchozí ani chráněnou) | `rr_api_delete_git_branch` |
+| `listGitTags` | `GET /api/v1/repos/:repo/git/:name/tags` | read | Tagy (anotované i lehké) [{name, commit, annotated, tagger, date, message}] | `rr_api_list_git_tags` |
+| `createGitTag` | `POST /api/v1/repos/:repo/git/:name/tags` | publish | Vytvořit tag {tag, ref, message} – se zprávou anotovaný<br>body: json | `rr_api_create_git_tag` |
+| `deleteGitTag` | `DELETE /api/v1/repos/:repo/git/:name/tags/:tag` | publish | Smazat tag | `rr_api_delete_git_tag` |
+| `listGitReleases` | `GET /api/v1/repos/:repo/git/:name/releases` | read | Releases (nejnovější první, koncepty jen pro zapisující) | `rr_api_list_git_releases` |
+| `createGitRelease` | `POST /api/v1/repos/:repo/git/:name/releases` | publish | Vytvořit release {tag_name, target_commitish, name, body, draft, prerelease, generate_release_notes}<br>body: json | `rr_api_create_git_release` |
+| `getGitRelease` | `GET /api/v1/repos/:repo/git/:name/releases/:id` | read | Detail release (id nebo „latest“) | `rr_api_get_git_release` |
+| `getGitReleaseByTag` | `GET /api/v1/repos/:repo/git/:name/releases/tags/:tag` | read | Release podle tagu | `rr_api_get_git_release_by_tag` |
+| `updateGitRelease` | `PATCH /api/v1/repos/:repo/git/:name/releases/:id` | publish | Upravit release {tag_name, target_commitish, name, body, draft, prerelease}<br>body: json | `rr_api_update_git_release` |
+| `deleteGitRelease` | `DELETE /api/v1/repos/:repo/git/:name/releases/:id` | publish | Smazat release (tag zůstane) | `rr_api_delete_git_release` |
+| `uploadGitReleaseAsset` | `POST /api/v1/repos/:repo/git/:name/releases/:id/assets` | publish | Nahrát soubor k release (?name=soubor&label=popis)<br>query: `name`, `label`<br>body: binary | `rr_api_upload_git_release_asset` |
+| `downloadGitReleaseAsset` | `GET /api/v1/repos/:repo/git/:name/releases/assets/:asset/download` | read | Stáhnout soubor release | `rr_api_download_git_release_asset` |
+| `deleteGitReleaseAsset` | `DELETE /api/v1/repos/:repo/git/:name/releases/assets/:asset` | publish | Smazat soubor release | `rr_api_delete_git_release_asset` |
+| `putGitFile` | `PUT /api/v1/repos/:repo/git/:name/contents` | publish | Vytvořit / upravit soubor commitem {path, content, encoding: utf8|base64, message, branch, sha, create}<br>body: json | `rr_api_put_git_file` |
+| `deleteGitFile` | `DELETE /api/v1/repos/:repo/git/:name/contents` | publish | Smazat soubor nebo adresář commitem (?path, branch, message, sha)<br>query: `path`, `branch`, `message`, `sha` | `rr_api_delete_git_file` |
+| `commitGitFiles` | `POST /api/v1/repos/:repo/git/:name/commit-files` | publish | Commit více souborů najednou (nahrávání) {branch, from, message, files: [{path, content, encoding}], deletes: [path]}<br>body: json | `rr_api_commit_git_files` |
 
 ## routes
 
