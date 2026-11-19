@@ -112,10 +112,10 @@ test('git: push creates the repository, clone works anonymously, permissions are
   assert.strictEqual(arch.status, 200);
   assert.strictEqual(Buffer.from(await arch.arrayBuffer()).subarray(0, 2).toString(), 'PK');
 
-  // browser on the clone URL is redirected to the admin
+  // the clone URL in a web browser opens the public browser of the repository (URL mask registry/git/...)
   const html = await fetch(`${base}/git/team/demo.git`, { headers: { accept: 'text/html' }, redirect: 'manual' });
-  assert.strictEqual(html.status, 302);
-  assert.match(html.headers.get('location'), /#\/git\/git\/team\/demo/);
+  assert.strictEqual(html.status, 200);
+  assert.match(await html.text(), /"repo":"git","type":"git","base":"\/git","path":"\/team\/demo\.git"/);
 
   // the git.push event reached the event log
   assert.ok(app.events.recent.some((e) => e.type === 'git.push' && e.data.name === 'team/demo'));

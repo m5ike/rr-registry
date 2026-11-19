@@ -1,4 +1,4 @@
-# RR Registry – Management API (v1.7.2)
+# RR Registry – Management API (v1.7.4)
 
 > Vygenerováno z `api/spec.json` nástrojem `tools/gen-clients.js` – needitovat ručně.
 
@@ -45,7 +45,8 @@ Každá operace je dostupná ve všech klientech:
 | `listRepos` | `GET /api/v1/repos` | read | Seznam repozitářů | `rr_api_list_repos` |
 | `createRepo` | `POST /api/v1/repos` | admin | Vytvořit repozitář {name, type: npm|generic|docker|git|group, description, public, allowPublish, quotaMb, immutable, acl, cleanup, members, deployTo, autoCreate}<br>body: json | `rr_api_create_repo` |
 | `getRepo` | `GET /api/v1/repos/:repo` | read | Detail repozitáře | `rr_api_get_repo` |
-| `updateRepo` | `PUT /api/v1/repos/:repo` | admin | Upravit repozitář {description, public, allowPublish, quotaMb, immutable, acl: {uživatel: none|read|publish}, cleanup: {enabled, maxVersions, maxAgeDays, prereleaseOnly, pattern, intervalHours}, members, deployTo, autoCreate}<br>body: json | `rr_api_update_repo` |
+| `updateRepo` | `PUT /api/v1/repos/:repo` | admin | Upravit repozitář {description, public, allowPublish, quotaMb, immutable, acl: {uživatel: none|read|publish}, cleanup: {enabled, maxVersions, maxAgeDays, prereleaseOnly, pattern, intervalHours}, members, deployTo, autoCreate} · browser: vzhled veřejného prohlížeče<br>body: json | `rr_api_update_repo` |
+| `getRepoBrowser` | `GET /api/v1/repos/:repo/browser` | read | Veřejný prohlížeč repozitáře: vzhled (browser), volby editoru a veřejné adresy; změna přes updateRepo {browser: {...}} | `rr_api_get_repo_browser` |
 | `deleteRepo` | `DELETE /api/v1/repos/:repo` | admin | Smazat repozitář (purge=1 smaže i soubory)<br>query: `purge` | `rr_api_delete_repo` |
 | `runCleanup` | `POST /api/v1/repos/:repo/cleanup` | admin | Spustit čištění dle pravidel retence {dryRun, policy?: {maxVersions, maxAgeDays, prereleaseOnly, pattern}}<br>body: json | `rr_api_run_cleanup` |
 | `getRepoStats` | `GET /api/v1/repos/:repo/stats` | read | Statistiky stahování repozitáře (celkem, nejstahovanější, posledních 30 dní)<br>query: `top` | `rr_api_get_repo_stats` |

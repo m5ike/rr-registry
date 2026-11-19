@@ -6,7 +6,7 @@ LABEL org.opencontainers.image.title="rr-registry" \
       org.opencontainers.image.authors="m5ike"
 
 # git + git-daemon (git http-backend) serve git repositories over HTTP
-RUN apk add --no-cache bash curl jq tini git git-daemon
+RUN apk add --no-cache bash curl jq tini git git-daemon bzip2
 
 WORKDIR /app
 COPY VERSION ./

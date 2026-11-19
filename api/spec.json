@@ -158,7 +158,15 @@
       "path": "/repos/:repo",
       "auth": "admin",
       "body": "json",
-      "summary": "Upravit repozitář {description, public, allowPublish, quotaMb, immutable, acl: {uživatel: none|read|publish}, cleanup: {enabled, maxVersions, maxAgeDays, prereleaseOnly, pattern, intervalHours}, members, deployTo, autoCreate}"
+      "summary": "Upravit repozitář {description, public, allowPublish, quotaMb, immutable, acl: {uživatel: none|read|publish}, cleanup: {enabled, maxVersions, maxAgeDays, prereleaseOnly, pattern, intervalHours}, members, deployTo, autoCreate} · browser: vzhled veřejného prohlížeče"
+    },
+    {
+      "id": "getRepoBrowser",
+      "group": "repos",
+      "method": "GET",
+      "path": "/repos/:repo/browser",
+      "auth": "read",
+      "summary": "Veřejný prohlížeč repozitáře: vzhled (browser), volby editoru a veřejné adresy; změna přes updateRepo {browser: {...}}"
     },
     {
       "id": "deleteRepo",

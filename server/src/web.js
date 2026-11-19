@@ -63,7 +63,10 @@ function createWeb(app) {
     const cfg = { baseUrl: '', portal: !!(app.portal && app.portal.enabled), version: c.version };
     if (app.ssh && app.ssh.port) cfg.ssh = { port: app.ssh.publicPort || app.ssh.port, host: c.sshPublicHost || '' };
     const th = app.typeHosts.match(req);
-    if (th) cfg.typeHost = { type: th.type, repo: app.typeHosts.repoFor(th.type), host: th.host, mainUrl: app.typeHosts.mainUrl(req, th) };
+    if (th) {
+      const containers = app.listRepos().filter((r) => r.type === th.type).map((r) => r.name);
+      cfg.typeHost = { type: th.type, repo: th.repo || app.typeHosts.repoFor(th.type), containers, host: th.host, mainUrl: app.typeHosts.mainUrl(req, th) };
+    }
     return cfg;
   }
 

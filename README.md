@@ -76,6 +76,11 @@ rr-web serve --open                                       # Web GUI lokálně
   **větve, tagy a releases** se soubory ke stažení, **přejmenování a přesun** repozitářů (staré URL dál fungují),
   úpravy a nahrávání souborů z prohlížeče a webové rozhraní ve stylu GitHubu (README s odkazy, diffy, rychlé nastavení)
   – na hostu `git-registry.<doména>` bez `/git` v adresách. Podrobnosti v [docs/GIT.md](docs/GIT.md).
+* **Veřejný prohlížeč repozitářů** – anonymní HTML zobrazení všech typů s README, hledáním, řazením, čtyřmi zobrazeními,
+  stažením výběru jako ZIP / tar.gz / tar.bz2, omezením rychlosti a filtrem souborů (allow / deny); vzhled (logo,
+  hlavička, barvy, Google Fonts, tlačítka) se nastavuje s živým náhledem. Adresy `<typ>-registry.<doména>/<repozitář>/`,
+  `<repozitář>.<typ>.registry.<doména>/` a `registry.<doména>/<typ>/<repozitář>/` (i s `rr` místo `registry`) –
+  viz [docs/BROWSER.md](docs/BROWSER.md).
   Viz [docs/GIT.md](docs/GIT.md).
 * **Více repozitářů** – typ `npm`, `docker`, `git`, `generic` (libovolné soubory: PUT/GET/DELETE) nebo `group`
   (virtuální skupina npm/generic repozitářů), výchozí repozitář na `/`, ostatní na `/r/<repo>/`, veřejné/soukromé, zákaz publikace.

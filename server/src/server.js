@@ -24,6 +24,7 @@ const { Portal } = require('./portal');
 const { TypeHosts } = require('./typehosts');
 const { SshKeys } = require('./ssh/keys');
 const { SshServer } = require('./ssh/server');
+const { Browser } = require('./browse');
 const { Transfer } = require('./transfer');
 const { Cache } = require('./cache');
 const { PluginManager } = require('./plugins');
@@ -105,6 +106,7 @@ class App {
     this.typeHosts = new TypeHosts(this);
     this.sshKeys = new SshKeys(this);
     this.ssh = new SshServer(this);
+    this.browser = new Browser(this);
     this.transfer = new Transfer(this);
     this.handlers = new Map();
     this.events = new Events(this);
@@ -211,6 +213,8 @@ class App {
       conf.quotaMb = q || 0;
     }
     if (body.immutable !== undefined) conf.immutable = bool(body.immutable);
+    // design and rules of the public browser (browse.js normalizes everything)
+    if (body.browser !== undefined) conf.browser = body.browser === null ? undefined : require('./browse').normalize(body.browser);
     if (body.autoCreate !== undefined) conf.autoCreate = bool(body.autoCreate);
     if (body.acl !== undefined) {
       const acl = typeof body.acl === 'string' ? Object.fromEntries(body.acl.split(',').filter(Boolean).map((x) => x.split(':').map((y) => y.trim()))) : body.acl || {};
@@ -437,18 +441,45 @@ class App {
       await this.auth.portalPreauth(req);
       // AI Tools Portal discovery (contract 1): the manifest of this app, optional for standalone use.
       if (p === '/.well-known/portal-app.json' && (req.method === 'GET' || req.method === 'HEAD')) return this.portalManifest(res);
-      // {type}-{app}.<domain>: one repository type at the host root (see typehosts.js)
+      // data of the public repository browser (any host)
+      if (p.startsWith('/-/rr/browse/')) return await this.browser.handleApi(req, res, url);
+      // {type}-{app}.<domain> (one repository type) and <repo>.<type>.{app}.<domain> (one repository); see typehosts.js
       const th = this.typeHosts.match(req);
-      if (th) {
+      const htmlPage = (req.method === 'GET' || req.method === 'HEAD') && /text\/html/.test(req.headers.accept || '') && !/application\/(json|vnd\.npm)/.test(req.headers.accept || '');
+      if (th && th.repo) {
+        req._typeHostType = th.type;
+        req._typeHost = th.host;
+        res.setHeader('x-rr-type-host', th.type);
+        if (htmlPage && /^\/admin\/?$/.test(p)) return send(res, 302, null, { location: `${this.typeHosts.mainUrl(req, th)}/admin/` });
+        if (htmlPage && !/^\/(?:api\/v1(?:\/|$)|-\/|static\/|admin\/|favicon\.)/.test(p)) return this.browser.page(req, res, { name: th.repo, base: '', path: p });
+        // clients (npm, git, files) use the repository host like /r/<repo>/
+        if (!/^\/(?:api\/v1(?:\/|$)|-\/|\.well-known\/|r\/|v2(?:\/|$)|admin\/|static\/|favicon\.)/.test(p)) { p = `/r/${th.repo}${p}`; url.pathname = p; }
+      } else if (th) {
         req._typeHostType = th.type;
         const page = this.typeHosts.page(th.type, req, p);
         if (page === 'admin') return send(res, 302, null, { location: `${this.typeHosts.mainUrl(req, th)}/admin/` });
         if (page === 'spa') { req._typeHost = th.host; return this.web.spa(req, res, th); }
+        if (page === 'browse') {
+          req._typeHost = th.host;
+          const t = this.typeHosts.browseTarget(th.type, p);
+          if (!t) throw new HttpError(404, `no ${th.type} repository on this registry`);
+          return this.browser.page(req, res, { name: t.repo, base: t.base, path: t.path });
+        }
         const np = this.typeHosts.rewrite(th.type, p);
         if (np === null) throw new HttpError(404, `no ${th.type} repository on this registry`);
         req._typeHost = th.host;
         res.setHeader('x-rr-type-host', th.type);
         if (np !== p) { p = np; url.pathname = np; }
+      }
+      // main host: /<type>/[<repository>/]<path> and /r/<repository>/<path> open the public browser in a web browser
+      if (!th && htmlPage) {
+        const tm = /^\/(npm|docker|git|generic|group)(\/.*)?$/.exec(p);
+        if (tm && !(tm[1] === 'git' && /\/(?:info\/refs|git-upload-pack|git-receive-pack)$/.test(p))) {
+          const t = this.typeHosts.browseTarget(tm[1], tm[2] || '/', `/${tm[1]}`);
+          if (t) return this.browser.page(req, res, { name: t.repo, base: t.base, path: t.path });
+        }
+        const rm0 = /^\/r\/([^/]+)(\/.*)?$/.exec(p);
+        if (rm0 && this.repoConfig(decodeURIComponent(rm0[1]))) return this.browser.page(req, res, { name: decodeURIComponent(rm0[1]), base: `/r/${rm0[1]}`, path: rm0[2] || '/' });
       }
       if (p === '/api/v1' || p.startsWith('/api/v1/')) return await this.api(req, res, url);
       if (p === '/v2' || p.startsWith('/v2/')) {

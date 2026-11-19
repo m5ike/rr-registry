@@ -36,6 +36,12 @@ class TypeHosts {
     return String((this.app.portal && this.app.portal.appId) || process.env.RR_APP_ID || 'registry').toLowerCase();
   }
 
+  /** Every name the registry answers to in host names: the app id plus "registry" and "rr" (RR_HOST_NAMES). */
+  get names() {
+    const extra = `${process.env.RR_HOST_NAMES || 'registry,rr'},${process.env.PORTAL_APP_ALIASES || ''}`.split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+    return [...new Set([this.appId, ...extra])];
+  }
+
   /** Effective type of a repository (a group counts as the type of its members). */
   typeOf(conf, seen = new Set()) {
     if (!conf) return null;
@@ -70,21 +76,34 @@ class TypeHosts {
     return (type === 'npm' || type === 'generic') && group ? group.name : plain ? plain.name : null;
   }
 
-  /** The type of the request's host, or null for the main host. */
+  /**
+   * The type (and repository) of the request's host, or null for the main host:
+   *   <type>-{registry|rr}.<domain>                 -> { type }               (type host)
+   *   <repository>.<type>.{registry|rr}.<domain>     -> { type, repo }         (repository host)
+   */
   match(req) {
     const raw = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim().toLowerCase();
     const host = raw.replace(/:\d+$/, '');
-    const label = host.split('.')[0];
-    const suffix = `-${this.appId}`;
-    if (!label.endsWith(suffix)) return null;
-    const type = label.slice(0, -suffix.length);
-    if (!TYPES.includes(type)) return null;
+    const labels = host.split('.');
+    const names = this.names;
+    let type = null;
+    let repo = null;
+    const m = /^([a-z]+)-(.+)$/.exec(labels[0]);
+    if (m && names.includes(m[2]) && TYPES.includes(m[1])) type = m[1];
+    else if (labels.length >= 3 && names.includes(labels[2]) && (TYPES.includes(labels[1]) || labels[1] === 'group')) {
+      const conf = this.app.repoConfig(labels[0]) || this.app.listRepos().find((x) => x.name.toLowerCase() === labels[0]);
+      if (!conf) return null;
+      repo = conf.name;
+      type = labels[1] === 'group' ? this.typeOf(conf) || 'generic' : labels[1];
+      if (conf.type !== labels[1] && this.typeOf(conf) !== labels[1]) return null;
+    }
+    if (!type) return null;
     // behind a gateway the port comes separately (X-Forwarded-Port); keep it in the links unless it is the default
     let full = raw;
     const fport = String(req.headers['x-forwarded-port'] || '').split(',')[0].trim();
     const proto = String(req.headers['x-forwarded-proto'] || (req.socket && req.socket.encrypted ? 'https' : 'http')).split(',')[0].trim();
     if (!/:\d+$/.test(raw) && /^\d+$/.test(fport) && !((proto === 'https' && fport === '443') || (proto === 'http' && fport === '80'))) full = `${raw}:${fport}`;
-    return { type, host: full };
+    return { type, host: full, repo };
   }
 
   /**
@@ -99,9 +118,14 @@ class TypeHosts {
     const s = this.app.stores.settings.get();
     if (type === 'git') {
       if (p === '/' || !GIT_SUB_RE.test(p)) return p; // home page and other web paths
-      // "git-registry/git/owner/name.git" (main host habit): the type host needs no /git - drop it
-      // instead of creating a repository called "git/owner/name"
-      if (/^\/git\//.test(p) && !this.gitRepoExists(repo, p)) p = p.slice(4);
+      // "/<git repository>/<name>.git" selects another git repository (URL mask <type>-registry/<repository>/...)
+      const first = decodeURIComponent(p.split('/')[1] || '');
+      const fc = first && first !== repo && this.app.repoConfig(first);
+      if (fc && fc.type === 'git' && !this.gitRepoExists(repo, p)) return `/r/${fc.name}${p.slice(first.length + 1)}`;
+      // "git-registry/git/owner/name.git" (main host habit, or the default repository by name): the type host
+      // needs no prefix - drop it instead of creating a repository called "git/owner/name"
+      if (p.startsWith(`/${repo}/`) && !this.gitRepoExists(repo, p)) p = p.slice(repo.length + 1);
+      else if (/^\/git\//.test(p) && !this.gitRepoExists(repo, p)) p = p.slice(4);
       return repo === s.gitRepo ? `/git${p}` : `/r/${repo}${p}`;
     }
     if (repo === s.defaultRepo) return p;
@@ -123,19 +147,35 @@ class TypeHosts {
    */
   page(type, req, p) {
     if (req.method !== 'GET' && req.method !== 'HEAD') return null;
-    if (!['git', 'npm', 'docker'].includes(type)) return null;
     if (p === '/admin' || p === '/admin/' || p === '/admin/index.html') return 'admin';
     const accept = String(req.headers.accept || '');
     if (!/text\/html/.test(accept) || /application\/(json|vnd\.npm)/.test(accept)) return null;
     if (/^\/(?:api\/v1(?:\/|$)|-\/|\.well-known\/|static\/|admin\/|v2(?:\/|$)|downloads(?:\/|$)|docs\/|install\.sh$|favicon\.)/.test(p)) return null;
     if (type === 'git' && /(?:\/(?:info\/refs|git-upload-pack|git-receive-pack))$/.test(p)) return null;
-    return 'spa';
+    // the git type host keeps its GitHub-like application, the other types get the public browser
+    return type === 'git' ? 'spa' : 'browse';
+  }
+
+  /**
+   * Repository and path of a browser page from the URL path: an optional leading repository name of the type
+   * ("/<repository>/<path>"), otherwise the default repository of the type. Returns { repo, path, base }.
+   */
+  browseTarget(type, p, prefix = '') {
+    const parts = p.split('/').filter(Boolean);
+    const first = parts[0] ? decodeURIComponent(parts[0]) : '';
+    const conf = first && this.app.repoConfig(first);
+    if (conf && (conf.type === type || this.typeOf(conf) === type)) {
+      return { repo: conf.name, path: `/${parts.slice(1).join('/')}`, base: `${prefix}/${parts[0]}` };
+    }
+    const repo = this.repoFor(type);
+    return repo ? { repo, path: `/${parts.join('/')}`, base: prefix } : null;
   }
 
   /** Main host of the registry (full administration): the public URL, or the type host without "{type}-". */
   mainUrl(req, th) {
     if (this.app.config.publicUrl) return this.app.config.publicUrl.replace(/\/+$/, '');
     const proto = String(req.headers['x-forwarded-proto'] || (req.socket && req.socket.encrypted ? 'https' : 'http')).split(',')[0].trim();
+    if (th.repo) return `${proto}://${th.host.split('.').slice(2).join('.')}`;
     return `${proto}://${th.host.replace(new RegExp(`^${th.type}-`), '')}`;
   }
 

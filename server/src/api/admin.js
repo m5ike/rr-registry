@@ -98,6 +98,26 @@ function createHandlers(app) {
     whoami: ({ identity }) => ({ name: identity.name, role: identity.role, readonly: !!identity.readonly, via: identity.via, version: app.config.version, features: FEATURES }),
 
     // ---- repositories ----
+    // public browser of a repository: design, editor options and public URLs (all three URL masks)
+    getRepoBrowser: ({ req, params }) => {
+      const conf = app.repoConfig(params.repo);
+      const base = baseUrl(req, app.config);
+      const type = conf.type === 'group' ? app.typeHosts.typeOf(conf) || 'generic' : conf.type;
+      let main;
+      try { main = new URL(base); } catch { main = new URL('http://localhost'); }
+      const port = main.port ? `:${main.port}` : '';
+      const th = app.typeHosts.list(base).find((t) => t.type === type);
+      // the domain of the registry: registry.example.com -> example.com; an IP / localhost -> localhost
+      const hn = main.hostname;
+      const domain = /^[\d.]+$|^\[/.test(hn) || !hn.includes('.') ? 'localhost' : hn.split('.').slice(1).join('.');
+      const name = app.typeHosts.appId;
+      const urls = [
+        { mask: '<typ>-registry.<doména>/<repozitář>/', url: th ? `${th.url}${encodeURIComponent(conf.name)}/` : `${main.protocol}//${type}-${name}.${domain}${port}/${encodeURIComponent(conf.name)}/` },
+        { mask: '<repozitář>.<typ>.registry.<doména>/', url: `${main.protocol}//${conf.name.toLowerCase()}.${conf.type === 'group' ? 'group' : type}.${name}.${domain}${port}/` },
+        { mask: 'registry.<doména>/<typ>/<repozitář>/', url: `${base}/${conf.type === 'group' ? 'group' : type}/${encodeURIComponent(conf.name)}/` },
+      ];
+      return { repo: conf.name, type, config: app.browser.config(conf), meta: app.browser.meta(), urls };
+    },
     listRepos: ({ identity }) => app.listRepos().filter((r) => app.auth.can(identity, 'read', r)).map((r) => app.repoInfo(r.name)),
     createRepo: ({ body, identity }) => {
       const r = app.createRepo(body);

@@ -47,6 +47,15 @@ Every repository type that has at least one repository is also served at the roo
 - On `.localhost` domains nothing needs to be configured; elsewhere add DNS records (or a wildcard `*.<domain>`) and,
   for HTTPS, certificates for the new hosts.
 
+## Aliases and repository hosts (1.7.4)
+
+The manifest declares the alias **`rr`** (`routing.aliases`) and **subdomains** (`routing.subdomains: true`), so with
+portal 1.9.2+ the registry also answers on `rr.<domain>`, `<type>-rr.<domain>` and every host below `registry.<domain>`
+/ `rr.<domain>` – the public browser uses `<repository>.<type>.registry.<domain>` (see [BROWSER.md](BROWSER.md)).
+Aliases are edited in the portal under *Gateway & routes → Domains and host names* (or `aliases:` in
+`apps.d/registry.yaml`); the registry learns them from `PORTAL_APP_ALIASES` after a restart. DNS needs a record for each
+name (a wildcard `*.<domain>` is easiest, `/etc/hosts` cannot hold wildcards).
+
 ## Migrating from the app id `npm-registry`
 
 Until 1.5.5 the app id was `npm-registry`. An installed portal (1.8.0 or newer) moves over like this (docker mode;

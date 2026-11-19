@@ -18,6 +18,8 @@
     const qs = search || '';
     if (parts[0] === '_') return `#/${parts.slice(1).join('/')}${qs}`;
     const repo = encodeURIComponent(TH.repo || '');
+    // "/<git repository>/<owner>/<name>" (URL mask with the repository name) or the default git repository
+    if (TH.type === 'git' && parts.length && (TH.containers || []).includes(decodeURIComponent(parts[0]))) return `#/git/${parts[0]}${parts.length > 1 ? `/${parts.slice(1).join('/')}` : ''}${qs}`;
     if (TH.type === 'git') return `#/git/${repo}${parts.length ? `/${parts.join('/')}` : ''}${qs}`;
     if (TH.type === 'npm') return parts.length ? `#/pkg/${repo}/${encodeURIComponent(parts.map(decodeURIComponent).join('/'))}${qs}` : `#/packages/${repo}${qs}`;
     if (TH.type === 'docker') return `#/images/${repo}${parts.length ? `/${parts.join('/')}` : ''}${qs}`;
@@ -30,6 +32,7 @@
     const [view, repo, ...rest] = parts;
     const same = !repo || decodeURIComponent(repo) === TH.repo;
     if (TH.type === 'git' && view === 'git' && same) return `/${rest.join('/')}${qs}`;
+    if (TH.type === 'git' && view === 'git' && (TH.containers || []).includes(decodeURIComponent(repo))) return `/${repo}${rest.length ? `/${rest.join('/')}` : ''}${qs}`;
     if (TH.type === 'npm' && view === 'packages' && same) return `/${qs}`;
     if (TH.type === 'npm' && view === 'pkg' && same && rest.length) return `/${decodeURIComponent(rest.join('/'))}${qs}`;
     if (TH.type === 'docker' && view === 'images' && same) return `/${rest.join('/')}${qs}`;
@@ -132,6 +135,83 @@
         $('#cfOk', el).onclick = () => { close(); resolve(true); };
         $$('[data-close]', $('#modal')).forEach((b) => { b.onclick = () => { close(); resolve(false); }; });
       });
+    });
+  }
+
+  /**
+   * Tool window stacked above the current dialog (the repository form stays open underneath).
+   * onMount(el, close) wires it up; Escape / the close button / the backdrop close only the tool window.
+   */
+  function toolDialog(title, html, onMount, { width = 640 } = {}) {
+    const wrap = document.createElement('div');
+    wrap.className = 'tool-wrap';
+    wrap.innerHTML = `<div class="tool-box card" role="dialog" aria-modal="true" aria-label="${esc(title)}" style="width:min(${width}px,96vw)">
+      <header class="win-bar">${icon('edit', 16)}<span class="win-title">${esc(title)}</span><button type="button" class="win-btn close" data-tclose aria-label="Zavřít">${icon('x', 15)}</button></header>
+      <div class="tool-body">${html}</div></div>`;
+    document.body.appendChild(wrap);
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); close(); } };
+    function close() { document.removeEventListener('keydown', onKey, true); wrap.parentNode && wrap.parentNode.removeChild(wrap); }
+    document.addEventListener('keydown', onKey, true);
+    wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) close(); });
+    $$('[data-tclose]', wrap).forEach((b) => { b.onclick = close; });
+    if (onMount) onMount($('.tool-body', wrap), close);
+    const first = $('.tool-body input, .tool-body select', wrap);
+    if (first) first.focus();
+    return close;
+  }
+
+  const ACL_LEVELS = [['none', 'bez přístupu', 'x'], ['read', 'čtení', 'eye'], ['publish', 'čtení a zápis', 'upload']];
+  /** "alice:publish,bob:read" <-> [{ user, level }] */
+  const parseAcl = (str) => String(str || '').split(',').map((x) => x.trim()).filter(Boolean).map((x) => { const [u, l] = x.split(':').map((y) => (y || '').trim()); return { user: u, level: ACL_LEVELS.some(([v]) => v === l) ? l : 'read' }; });
+  const aclString = (rows) => rows.filter((r) => r.user).map((r) => `${r.user}:${r.level}`).join(',');
+
+  /** GUI for the access list of a repository; Save writes the text back into `input`. */
+  async function aclTool(input, repo) {
+    const rows = parseAcl(input.value);
+    const users = isAdmin() ? await rr.listUsers().catch(() => []) : [];
+    const levelBtns = (r, i) => `<div class="seg-btns" role="radiogroup" aria-label="Oprávnění">${ACL_LEVELS.map(([v, l, ic]) => `<button type="button" role="radio" aria-checked="${r.level === v}" class="${r.level === v ? `on lv-${v}` : ''}" data-lv="${v}" data-i="${i}" title="${esc(l)}">${icon(ic, 14)}<span>${esc(l)}</span></button>`).join('')}</div>`;
+    toolDialog(`Přístupová práva${repo ? ` – ${repo.name}` : ''}`, `
+      <p class="small muted" style="margin-top:0">Seznam má přednost před globální rolí uživatele. Administrátoři mají vždy plný přístup.
+        ${repo && repo.public === false ? '<b>Repozitář není veřejný</b> – uživatelé mimo seznam nemají žádný přístup.' : 'Uživatelé mimo seznam se řídí svou rolí (a anonymním čtením, je-li repozitář veřejný).'}</p>
+      <datalist id="aclUsers">${users.map((u) => `<option value="${esc(u.name)}">${esc(u.role)}</option>`).join('')}</datalist>
+      <div id="aclRows" class="acl-rows"></div>
+      <div class="row" style="margin-top:10px;flex-wrap:wrap"><button type="button" class="btn small" id="aclAdd">${icon('plus', 14)}Přidat uživatele</button>
+        ${users.length ? '<button type="button" class="btn small ghost" id="aclAll">Doplnit všechny uživatele</button>' : ''}<span class="spacer"></span>
+        <span class="small muted">Všem:</span>${ACL_LEVELS.map(([v, l]) => `<button type="button" class="btn small ghost" data-all="${v}">${esc(l)}</button>`).join('')}</div>
+      <label style="margin-top:12px">Výsledek (zapíše se do pole) <code id="aclPreview" class="acl-preview"></code></label>
+      <p class="error" id="aclErr"></p>
+      <div class="row"><span class="spacer"></span><button type="button" class="btn" data-tclose>Zrušit</button><button type="button" class="btn primary" id="aclSave">${icon('check', 15)}Uložit</button></div>`, (el, close) => {
+      $$('[data-tclose]', el).forEach((b) => { b.onclick = close; });
+      const preview = () => { $('#aclPreview', el).textContent = aclString(rows) || '(prázdné)'; };
+      const draw = () => {
+        $('#aclRows', el).innerHTML = rows.length ? rows.map((r, i) => `<div class="acl-row">
+            <span class="avatar small">${esc((r.user || '?').slice(0, 2))}</span>
+            <input class="mono" list="aclUsers" data-u="${i}" value="${esc(r.user)}" placeholder="uživatel" aria-label="Uživatel">
+            ${levelBtns(r, i)}
+            <button type="button" class="btn small ghost danger" data-del="${i}" aria-label="Odebrat">${icon('trash', 14)}</button></div>`).join('')
+          : '<p class="muted small">Seznam je prázdný – platí jen globální role uživatelů.</p>';
+        preview();
+        $$('[data-u]', el).forEach((inp) => { inp.oninput = () => { rows[Number(inp.dataset.u)].user = inp.value.trim(); preview(); }; });
+        $$('[data-lv]', el).forEach((b) => { b.onclick = () => { rows[Number(b.dataset.i)].level = b.dataset.lv; draw(); }; });
+        $$('[data-del]', el).forEach((b) => { b.onclick = () => { rows.splice(Number(b.dataset.del), 1); draw(); }; });
+      };
+      draw();
+      $('#aclAdd', el).onclick = () => { rows.push({ user: '', level: 'read' }); draw(); const last = $$('[data-u]', el).pop(); if (last) last.focus(); };
+      const all = $('#aclAll', el);
+      if (all) all.onclick = () => { for (const u of users) if (!rows.some((r) => r.user === u.name) && u.role !== 'admin') rows.push({ user: u.name, level: 'read' }); draw(); };
+      $$('[data-all]', el).forEach((b) => { b.onclick = () => { rows.forEach((r) => { r.level = b.dataset.all; }); draw(); }; });
+      $('#aclSave', el).onclick = () => {
+        const names = rows.map((r) => r.user).filter(Boolean);
+        const bad = names.find((n) => !/^[A-Za-z0-9_][A-Za-z0-9_.@-]*$/.test(n));
+        if (bad) { $('#aclErr', el).textContent = `Neplatné jméno uživatele: ${bad}`; return; }
+        const dup = names.find((n, i) => names.indexOf(n) !== i);
+        if (dup) { $('#aclErr', el).textContent = `Uživatel ${dup} je v seznamu dvakrát.`; return; }
+        input.value = aclString(rows);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.classList.add('flash');
+        setTimeout(() => input.classList.remove('flash'), 900);
+        close();
+      };
     });
   }
 
@@ -479,7 +559,7 @@
         <label class="check"><input type="checkbox" name="immutable" ${r && r.immutable ? 'checked' : ''}> neměnný (zákaz mazání a přepisu verzí, force-push)</label>
         <label class="check" data-only="git"><input type="checkbox" name="autoCreate" ${!r || r.autoCreate !== false ? 'checked' : ''}> git: vytvořit repozitář při prvním push</label>
         <label>Kvóta úložiště (MB, 0 = bez limitu) <input type="number" name="quotaMb" value="${r && r.quotaMb ? r.quotaMb : 0}" min="0"></label>
-        <label>Přístupová práva <input name="acl" value="${esc(acl)}" placeholder="alice:publish,bob:read,eve:none"></label>
+        <label>Přístupová práva <span class="inp-btn"><input name="acl" id="aclInput" value="${esc(acl)}" placeholder="alice:publish,bob:read,eve:none"><button type="button" class="btn small ghost" id="aclTool" title="Upravit v nástroji" aria-label="Upravit přístupová práva v nástroji">${icon('users', 16)}</button></span></label>
         <label data-only="group">Členové skupiny <input name="members" value="${esc(r && r.members ? r.members.join(',') : '')}" placeholder="npm,internal"></label>
         <label data-only="group">Publikovat do (deployTo) <input name="deployTo" value="${esc(r && r.deployTo ? r.deployTo : '')}" placeholder="internal"></label>
       </form>
@@ -495,6 +575,7 @@
       <p class="muted small">npm: verze balíčku (verze s dist-tagem zůstávají) · docker: tagy image (latest zůstává) · generic: soubory v adresáři · git: git gc.</p>
       <div class="row"><span class="spacer"></span><button class="btn" data-close>Zrušit</button><button class="btn primary" id="save">Uložit</button></div>`, (el, close) => {
       const sync = () => { const t = r ? r.type : $('#rtype', el).value; $$('[data-only]', el).forEach((x) => x.classList.toggle('hidden', x.dataset.only !== t)); };
+      $('#aclTool', el).onclick = () => aclTool($('#aclInput', el), { name: r ? r.name : ($('[name=name]', el).value || 'nový'), public: $('[name=public]', el).checked });
       $('#rtype', el).onchange = sync;
       sync();
       $('#save', el).onclick = async () => {
@@ -557,6 +638,7 @@
           <a class="btn" href="#/files/${enc(r.name)}">${icon('folder', 16)}Soubory</a>
           <button class="btn" id="edit">Upravit</button><button class="btn danger" id="del">Smazat</button>
         </div></div>
+      <div class="card" id="browserCard"><h2>${icon('eye', 17)}Veřejný prohlížeč</h2><p class="muted small">Načítám…</p></div>
       <div class="card"><h2>Čištění (retence)</h2>
         <p>${c.enabled ? '<span class="badge ok">automaticky</span>' : '<span class="badge">ručně</span>'} ponechat ${c.maxVersions || '∞'} · max. stáří ${c.maxAgeDays ? `${c.maxAgeDays} dní` : '∞'}${c.prereleaseOnly ? ' · jen pre-release' : ''}${c.pattern ? ` · ${esc(c.pattern)}` : ''} · poslední běh ${r.cleanupLastRun ? fmtDate(r.cleanupLastRun) : '–'}</p>
         <div class="row"><button class="btn" id="preview">Náhled čištění</button><button class="btn danger" id="clean" ${r.immutable ? 'disabled' : ''}>Spustit čištění</button></div>
@@ -565,6 +647,18 @@
       <div class="card"><h2>Použití</h2><pre>${esc(usage(r, reg))}</pre></div>`, 'repo');
     $('#edit', v).onclick = () => repoForm(r);
     $('#del', v).onclick = () => deleteRepo(r.name);
+    rr.getRepoBrowser(r.name).then((b) => {
+      const card = $('#browserCard', v);
+      if (!card) return;
+      const c0 = b.config;
+      const f = c0.filter.patterns.length ? `${c0.filter.mode === 'allow' ? 'jen' : 'skrýt'} ${c0.filter.patterns.length} vzorů` : 'bez filtru';
+      card.innerHTML = `<div class="row"><h2 style="margin:0">${icon('eye', 17)}Veřejný prohlížeč</h2>${c0.enabled ? '<span class="badge ok">zapnutý</span>' : '<span class="badge off">vypnutý</span>'}<span class="spacer"></span>
+          ${isAdmin() ? `<button class="btn primary" id="brEdit">${icon('edit', 15)}Upravit vzhled a pravidla</button>` : ''}</div>
+        <p class="muted small">Anonymní HTML zobrazení repozitáře s README – motiv <b>${esc(c0.theme)}</b>, zobrazení <b>${esc(c0.view)}</b>, ${esc(f)}, ${c0.rateLimitKBps ? `stahování max. ${c0.rateLimitKBps} kB/s` : 'stahování bez omezení'}${c0.multiSelect ? `, hromadné stažení (${c0.formats.join(', ')})` : ''}.</p>
+        <div class="table-wrap"><table>${b.urls.map((u) => `<tr><td class="small muted">${esc(u.mask)}</td><td><a href="${esc(u.url)}" target="_blank" rel="noopener"><code>${esc(u.url)}</code></a></td></tr>`).join('')}</table></div>`;
+      const be = $('#brEdit', card);
+      if (be) be.onclick = () => browserEditor(r, b);
+    }).catch(() => { const card = $('#browserCard', v); if (card) card.remove(); });
     const showClean = (res) => {
       $('#cleanOut', v).innerHTML = `<p>${res.dryRun ? 'Náhled' : 'Hotovo'}: ${res.actions.length} akcí${res.dryRun ? '' : `, uvolněno ${fmtBytes(res.freedBytes)}`}</p>
         <div class="table-wrap"><table>${res.actions.slice(0, 200).map((a) => `<tr><td>${esc(a.action)}</td><td><code>${esc(a.target)}</code></td><td class="muted small">${esc(a.reason || '')}</td></tr>`).join('')}</table></div>`;
@@ -572,6 +666,150 @@
     $('#preview', v).onclick = async () => showClean(await run(() => rr.runCleanup(r.name, { dryRun: true })));
     $('#clean', v).onclick = async () => { if (await confirmBox(`Spustit čištění repozitáře ${r.name}? Smazaná data nelze obnovit.`)) showClean(await run(() => rr.runCleanup(r.name, { dryRun: false }), 'Čištění dokončeno')); };
   };
+
+  // ---------------------------------------------------------------- public browser design editor
+  /** Design and rules of the public browser with a live preview (postMessage to the preview frame). */
+  function browserEditor(r, b) {
+    const m = b.meta;
+    const cfg = JSON.parse(JSON.stringify(b.config));
+    const previewUrl = `/${r.type}/${encodeURIComponent(r.name)}/`;
+    const opt = (list, cur, labels = {}) => list.map((x) => `<option value="${esc(x)}"${x === cur ? ' selected' : ''}>${esc(labels[x] || x)}</option>`).join('');
+    const chk = (name, on, label) => `<label class="check"><input type="checkbox" name="${name}"${on ? ' checked' : ''}> ${label}</label>`;
+    const multi = (name, list, cur, labels = {}) => `<div class="chips">${list.map((x) => `<label class="chip-check"><input type="checkbox" name="${name}" value="${esc(x)}"${cur.includes(x) ? ' checked' : ''}><span>${esc(labels[x] || x)}</span></label>`).join('')}</div>`;
+    const HDR = { bar: 'lišta', hero: 'velký banner', minimal: 'jen nadpis', none: 'bez hlavičky' };
+    const BTN = { rounded: 'zaoblená', pill: 'kulatá (pill)', square: 'hranatá', outline: 'obrysová', soft: 'jemná' };
+    const VIEW = { list: 'řádky', grid: 'náhled', tiles: 'bloky', details: 'detail (tabulka)' };
+    const COL = { size: 'velikost', modified: 'datum změny', type: 'typ', version: 'verze', description: 'popis' };
+    const SORT = { name: 'název', modified: 'datum', size: 'velikost', type: 'typ' };
+    const DENS = { compact: 'kompaktní', comfortable: 'běžná', spacious: 'vzdušná' };
+    const MODE = { auto: 'podle systému', light: 'světlý', dark: 'tmavý' };
+    toolDialog(`Veřejný prohlížeč – ${r.name}`, `
+      <div class="br-editor">
+        <form id="bf" class="br-form" autocomplete="off">
+          <div class="tabs br-tabs" role="tablist">${[['look', 'Vzhled'], ['view', 'Zobrazení'], ['dl', 'Stahování'], ['filter', 'Filtr'], ['text', 'Texty']].map(([k, l], i) => `<button type="button" role="tab" data-btab="${k}" class="${i ? '' : 'active'}">${l}</button>`).join('')}</div>
+          <section data-bpane="look" class="form" style="grid-template-columns:1fr 1fr">
+            ${chk('enabled', cfg.enabled, '<b>Prohlížeč zapnutý</b>')}
+            <span></span>
+            <label>Nadpis <input name="title" value="${esc(cfg.title)}" placeholder="${esc(r.description || r.name)}"></label>
+            <label>Podnadpis <input name="subtitle" value="${esc(cfg.subtitle)}"></label>
+            <label style="grid-column:1/-1">Logo (URL nebo nahraný obrázek) <span class="inp-btn"><input name="logo" value="${esc(cfg.logo.startsWith('data:') ? '(nahraný obrázek)' : cfg.logo)}" data-raw="${esc(cfg.logo)}" placeholder="https://…/logo.svg"><label class="btn small">${icon('upload', 14)}Nahrát<input type="file" id="logoFile" accept="image/*" hidden></label><button type="button" class="btn small ghost" id="logoClear" aria-label="Odebrat logo">${icon('x', 14)}</button></span></label>
+            <label>Hlavička <select name="header">${opt(m.headers, cfg.header, HDR)}</select></label>
+            <label>Režim <select name="mode">${opt(m.modes, cfg.mode, MODE)}</select></label>
+            <div style="grid-column:1/-1"><span class="lbl">Barevná varianta</span><div class="swatches">${Object.entries(m.themes).map(([k, col]) => `<label class="swatch" title="${esc(k)}"><input type="radio" name="theme" value="${esc(k)}"${k === cfg.theme ? ' checked' : ''}><i style="background:${col}"></i><span>${esc(k)}</span></label>`).join('')}
+              <label class="swatch" title="vlastní"><input type="checkbox" name="useAccent"${cfg.accent ? ' checked' : ''}><input type="color" name="accent" value="${esc(cfg.accent || m.themes[cfg.theme] || '#F5A524')}"><span>vlastní</span></label></div></div>
+            <label>Písmo (Google Fonts) <input name="font" list="brFonts" value="${esc(cfg.font)}"></label>
+            <label>Písmo nadpisů <input name="headingFont" list="brFonts" value="${esc(cfg.headingFont)}" placeholder="stejné"></label>
+            <datalist id="brFonts">${m.fonts.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>
+            <label>Neproporcionální písmo <select name="monoFont">${opt(m.monoFonts, cfg.monoFont)}</select></label>
+            <label>Tlačítka <select name="buttons">${opt(m.buttons, cfg.buttons, BTN)}</select></label>
+            <label>Zaoblení rohů <span class="row" style="flex-wrap:nowrap"><input type="range" name="radius" min="0" max="28" value="${cfg.radius}"><output id="radOut">${cfg.radius} px</output></span></label>
+            <label>Hustota <select name="density">${opt(m.density, cfg.density, DENS)}</select></label>
+          </section>
+          <section data-bpane="view" class="form hidden" style="grid-template-columns:1fr 1fr">
+            <label>Výchozí zobrazení <select name="view">${opt(m.views, cfg.view, VIEW)}</select></label>
+            <div><span class="lbl">Povolená zobrazení</span>${multi('views', m.views, cfg.views, VIEW)}</div>
+            <div style="grid-column:1/-1"><span class="lbl">Zobrazované detaily</span>${multi('columns', m.columns, cfg.columns, COL)}</div>
+            <label>Výchozí řazení <select name="sort">${opt(m.sorts, cfg.sort, SORT)}</select></label>
+            <label>Směr <select name="sortDir">${opt(['asc', 'desc'], cfg.sortDir, { asc: 'vzestupně', desc: 'sestupně' })}</select></label>
+            ${chk('search', cfg.search, 'hledání')}${chk('allowSort', cfg.allowSort, 'návštěvník může měnit řazení')}
+            ${chk('readme', cfg.readme, 'zobrazovat README.md')}${chk('preview', cfg.preview, 'náhled souborů (text, Markdown, obrázky)')}
+            ${chk('showInstall', cfg.showInstall, 'příkazy pro instalaci / pull / clone')}${chk('showHidden', cfg.showHidden, 'zobrazovat skryté soubory (.*)')}
+          </section>
+          <section data-bpane="dl" class="form hidden" style="grid-template-columns:1fr 1fr">
+            ${chk('multiSelect', cfg.multiSelect, 'výběr více položek a stažení jako archiv')}<span></span>
+            <div style="grid-column:1/-1"><span class="lbl">Formáty archivu</span>${multi('formats', m.formats, cfg.formats, { zip: 'ZIP', 'tar.gz': 'tar.gz (gzip)', 'tar.bz2': 'tar.bz2 (bzip2)' })}</div>
+            <label>Omezení rychlosti stahování (kB/s, 0 = bez omezení) <input type="number" name="rateLimitKBps" min="0" value="${cfg.rateLimitKBps}"></label>
+            <p class="small muted" id="rateInfo" style="align-self:end"></p>
+            <p class="small muted" style="grid-column:1/-1">Limit platí pro každé stažení z veřejného prohlížeče zvlášť (soubory i archivy). Klienti registru (npm, git, docker, API) omezeni nejsou.</p>
+          </section>
+          <section data-bpane="filter" class="form hidden" style="grid-template-columns:1fr">
+            <div><span class="lbl">Režim</span><div class="seg-btns">${['deny', 'allow'].map((x) => `<label class="seg-radio"><input type="radio" name="fmode" value="${x}"${cfg.filter.mode === x ? ' checked' : ''}><span>${x === 'deny' ? 'skrýt odpovídající (deny)' : 'zobrazit jen odpovídající (allow)'}</span></label>`).join('')}</div></div>
+            <label>Masky souborů – jedna na řádek <textarea name="patterns" rows="6" class="mono" placeholder="*.log\nsecret/\n**/*.pem\nbuilds/*-debug.*">${esc(cfg.filter.patterns.join('\n'))}</textarea></label>
+            <p class="small muted" style="margin:0"><code>*</code> libovolné znaky kromě <code>/</code>, <code>**</code> cokoli včetně podadresářů, <code>?</code> jeden znak. Maska bez <code>/</code> platí pro název kdekoli, <code>adresář/</code> skryje celý adresář. Filtr platí i pro stažení a archivy.</p>
+            <label>Vyzkoušet cestu <span class="inp-btn"><input id="ftest" class="mono" placeholder="builds/debug.log"><span id="fres" class="badge plain">–</span></span></label>
+          </section>
+          <section data-bpane="text" class="form hidden" style="grid-template-columns:1fr">
+            <label>Úvod nad obsahem (Markdown, jen v kořeni) <textarea name="intro" rows="8">${esc(cfg.intro)}</textarea></label>
+            <label>Patička <input name="footer" value="${esc(cfg.footer)}" placeholder="© Firma s.r.o. · kontakt"></label>
+          </section>
+          <div class="row br-actions"><button type="button" class="btn ghost" id="brReset">Výchozí nastavení</button><span class="spacer"></span><button type="button" class="btn" data-tclose>Zavřít</button><button type="button" class="btn primary" id="brSave">${icon('check', 15)}Uložit</button></div>
+        </form>
+        <div class="br-preview"><div class="br-bar"><span class="small muted">Náhled</span><span class="spacer"></span>${['list', 'grid', 'tiles', 'details'].map((x) => `<span></span>`).join('')}<a class="btn small ghost" href="${esc(previewUrl)}" target="_blank" rel="noopener">${icon('popout', 14)}Otevřít</a></div>
+          <iframe id="brFrame" src="${esc(previewUrl)}" title="Náhled veřejného prohlížeče"></iframe></div>
+      </div>`, (el, close) => {
+      const f = $('#bf', el);
+      const frame = $('#brFrame', el);
+      let logo = cfg.logo;
+      const collect = () => {
+        const d = new FormData(f);
+        const all = (k) => d.getAll(k);
+        return {
+          enabled: f.enabled.checked, title: f.title.value, subtitle: f.subtitle.value, logo, header: f.header.value, mode: f.mode.value,
+          theme: (f.querySelector('[name=theme]:checked') || {}).value || cfg.theme, accent: f.useAccent.checked ? f.accent.value : '',
+          font: f.font.value.trim() || 'Inter', headingFont: f.headingFont.value.trim(), monoFont: f.monoFont.value, buttons: f.buttons.value,
+          radius: Number(f.radius.value), density: f.density.value, view: f.view.value, views: all('views'), columns: all('columns'),
+          sort: f.sort.value, sortDir: f.sortDir.value, search: f.search.checked, allowSort: f.allowSort.checked, readme: f.readme.checked,
+          preview: f.preview.checked, showInstall: f.showInstall.checked, showHidden: f.showHidden.checked, multiSelect: f.multiSelect.checked,
+          formats: all('formats'), rateLimitKBps: Number(f.rateLimitKBps.value) || 0,
+          filter: { mode: (f.querySelector('[name=fmode]:checked') || {}).value || 'deny', patterns: f.patterns.value.split('\n').map((x) => x.trim()).filter(Boolean) },
+          intro: f.intro.value, footer: f.footer.value,
+        };
+      };
+      const send = (resetView) => {
+        const c1 = collect();
+        if (!c1.views.includes(c1.view)) c1.views = [...new Set([c1.view, ...c1.views])];
+        try { frame.contentWindow.postMessage({ type: 'rr-browse-preview', cfg: c1, resetView }, location.origin); } catch { /* not loaded yet */ }
+        $('#radOut', el).textContent = `${c1.radius} px`;
+        $('#rateInfo', el).textContent = c1.rateLimitKBps ? `≈ ${(c1.rateLimitKBps / 1024).toFixed(2)} MB/s · 100 MB za ${Math.ceil((100 * 1024) / c1.rateLimitKBps)} s` : 'bez omezení';
+        filterTest();
+      };
+      // the same rules as the server (browse.js makeFilter) for the live test
+      const globRe = (g) => new RegExp(`^${g.split('').map((ch, i, a) => (ch === '*' ? (a[i + 1] === '*' ? '\u0001' : '[^/]*') : ch === '?' ? '[^/]' : ch.replace(/[.+^${}()|[\]\\]/g, '\\$&'))).join('').replace(/\u0001\[\^\/\]\*/g, '.*')}$`, 'i');
+      function filterTest() {
+        const t = $('#ftest', el).value.trim().replace(/^\/+/, '');
+        const res = $('#fres', el);
+        if (!t) { res.textContent = '–'; res.className = 'badge plain'; return; }
+        const c1 = collect();
+        const rules = c1.filter.patterns.map((p0) => { const cl = p0.replace(/^\/+/, ''); return { re: globRe(cl.replace(/\/$/, '')), dir: cl.endsWith('/'), any: !cl.includes('/') }; });
+        const hit = (rel, isDir) => rules.some((x) => (x.dir && !isDir ? false : x.any ? rel.split('/').some((sg) => x.re.test(sg)) : x.re.test(rel)));
+        const parts = t.split('/');
+        const anc = parts.slice(0, -1).some((_, i) => hit(parts.slice(0, i + 1).join('/'), true));
+        let vis = c1.showHidden || !parts.some((sg) => sg.startsWith('.'));
+        if (vis && rules.length) vis = c1.filter.mode === 'deny' ? !hit(t, false) && !anc : hit(t, false);
+        res.textContent = vis ? 'zobrazeno' : 'skryto';
+        res.className = `badge ${vis ? 'ok' : 'off'}`;
+      }
+      frame.addEventListener('load', () => send(true));
+      f.addEventListener('input', () => send(false));
+      f.addEventListener('change', (e) => send(['view', 'sort', 'sortDir'].includes(e.target.name)));
+      $('#ftest', el).addEventListener('input', filterTest);
+      $$('[data-btab]', el).forEach((t) => { t.onclick = () => { $$('[data-btab]', el).forEach((x) => x.classList.toggle('active', x === t)); $$('[data-bpane]', el).forEach((pn) => pn.classList.toggle('hidden', pn.dataset.bpane !== t.dataset.btab)); }; });
+      f.logo.addEventListener('input', () => { logo = f.logo.value.trim(); });
+      $('#logoFile', el).onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        if (file.size > 300 * 1024) return toast('Logo může mít nejvýše 300 kB', true);
+        logo = await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(file); });
+        f.logo.value = '(nahraný obrázek)';
+        send(false);
+      };
+      $('#logoClear', el).onclick = () => { logo = ''; f.logo.value = ''; send(false); };
+      $('#brReset', el).onclick = async () => {
+        if (!(await confirmBox('Vrátit výchozí vzhled a pravidla prohlížeče?'))) return;
+        await run(() => rr.updateRepo(r.name, { browser: {} }), 'Obnoveno');
+        close(); route();
+      };
+      $$('[data-tclose]', el).forEach((x) => { x.onclick = close; });
+      $('#brSave', el).onclick = async () => {
+        const c1 = collect();
+        if (!c1.views.length) return toast('Povolte alespoň jedno zobrazení', true);
+        if (!c1.views.includes(c1.view)) c1.views.unshift(c1.view);
+        await run(() => rr.updateRepo(r.name, { browser: c1 }), 'Vzhled prohlížeče uložen');
+        frame.src = frame.src;
+      };
+      send(false);
+    }, { width: 1320 });
+  }
 
   // ---------------------------------------------------------------- packages
   views.packages = async (repoName) => {
