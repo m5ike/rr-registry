@@ -1,4 +1,4 @@
-# RR Registry – Management API (v1.6.1)
+# RR Registry – Management API (v1.7.2)
 
 > Vygenerováno z `api/spec.json` nástrojem `tools/gen-clients.js` – needitovat ručně.
 
